@@ -9,6 +9,10 @@ Date of creation : 16/03/2026
 
 from mesa import Agent
 import random
+from config import load_config
+
+config = load_config()
+actions = config["actions"]
 
 class baseAgent(Agent):
     def __init__(self, model):
@@ -35,15 +39,7 @@ class baseAgent(Agent):
 
     @staticmethod
     def deliberate(knowledge):
-        actions = {
-            "move_up": 0,
-            "move_down": 1,
-            "move_right": 2,
-            "move_left": 3,
-            "pick_up": 4,
-            "drop": 5,
-            "transform": 6
-        }
+        
         return random.choice(list(actions.values()))
 
 
