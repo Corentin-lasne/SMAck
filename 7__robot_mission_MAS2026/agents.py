@@ -9,9 +9,11 @@ Date of creation : 16/03/2026
 
 from mesa import Agent
 import random
-from config import load_config
+import json
 
-config = load_config()
+with open("config.json") as f:
+    config = json.load(f)
+
 actions = config["actions"]
 
 class baseAgent(Agent):

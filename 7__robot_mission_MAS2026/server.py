@@ -13,6 +13,7 @@ from matplotlib.figure import Figure
 from mesa.visualization import SolaraViz, make_plot_component, make_space_component
 from mesa.visualization.utils import update_counter
 from agents import greenAgent, yellowAgent, redAgent
+from objects import radioactivityAgent, wasteAgent
 # Import the local MoneyModel.py
 from model import Model
 
@@ -30,18 +31,37 @@ def robotAgent_portrayal(robotAgent):
 
 def wasteAgent_portrayal(wasteAgent):
     size = 5
-    if wasteAgent.type == "green":
+    if wasteAgent.waste_type == "green":
         color = "lightgreen"
-    elif wasteAgent.type == "yellow":
+    elif wasteAgent.waste_type == "yellow":
         color = "lightyellow"
-    elif wasteAgent.type == "red":
+    elif wasteAgent.waste_type == "red":
         color = "lightcoral"
     return {"size": size, "color": color}
 
-def wasteZoneAgent_portrayal(wasteZoneAgent):
-    size = 20
-    color = "purple"
+def radioactivityAgent_portrayal(radioactivityAgent):
+    """Portrayal for radioactivity agents based on their level."""
+    size = 1
+    # Color based on radioactivity level
+    if radioactivityAgent.radioactivity < 0.33:
+        color = "lightgreen"
+    elif radioactivityAgent.radioactivity < 0.66:
+        color = "lightyellow"
+    elif radioactivityAgent.radioactivity < 1:
+        color = "lightcoral"
+    else:  # Waste Disposal Zone
+        color = "purple"
     return {"size": size, "color": color}
+
+def agent_portrayal(agent):
+    """General portrayal function that handles all agent types."""
+    if isinstance(agent, radioactivityAgent):
+        return radioactivityAgent_portrayal(agent)
+    elif isinstance(agent, wasteAgent):
+        return wasteAgent_portrayal(agent)
+    elif isinstance(agent, (greenAgent, yellowAgent, redAgent)):
+        return robotAgent_portrayal(agent)
+    return {"size": 1, "color": "gray"}
 
 # @solara.component
 # def Histogram(model):
@@ -57,10 +77,29 @@ def wasteZoneAgent_portrayal(wasteZoneAgent):
 #     solara.FigureMatplotlib(fig)
 
 model_params = {
-    "n_agents": {
+    "n_green_agents": {
         "type": "SliderInt",
-        "value": [1, 1, 1],
-        "label": "Number of agents [green, yellow, red]:",
+        "value": 1,
+        "label": "Number of green agents:",
+        "min": 0,
+        "max": 10,
+        "step": 1,
+    },
+    "n_yellow_agents": {
+        "type": "SliderInt",
+        "value": 1,
+        "label": "Number of yellow agents:",
+        "min": 0,
+        "max": 10,
+        "step": 1,
+    },
+    "n_red_agents": {
+        "type": "SliderInt",
+        "value": 1,
+        "label": "Number of red agents:",
+        "min": 0,
+        "max": 10,
+        "step": 1,
     },
     "n_waste": {
         "type": "SliderInt",
@@ -89,9 +128,9 @@ model_params = {
 }
 
 # Create initial model instance
-model = Model(n_agents=[1, 1, 1], n_waste=1, width=100, height=100)
+model = Model(n_green_agents=1, n_yellow_agents=1, n_red_agents=1, n_waste=1, width=100, height=100)
 
-SpaceGraph = make_space_component(robotAgent_portrayal, wasteAgent_portrayal, wasteZoneAgent_portrayal)
+SpaceGraph = make_space_component(agent_portrayal)
 # GiniPlot = make_plot_component("Gini")
 
 #Create the Dashboard
