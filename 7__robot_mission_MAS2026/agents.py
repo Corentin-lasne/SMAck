@@ -42,6 +42,7 @@ class baseAgent(Agent):
             "move_left": 3,
             "pick_up": 4,
             "drop": 5,
+            "transform": 6
         }
         return random.choice(list(actions.values()))
 
