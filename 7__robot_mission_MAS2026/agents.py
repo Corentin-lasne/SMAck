@@ -19,18 +19,19 @@ class baseAgent(Agent):
             "actions": [],
         }
 
-        self.percepts = {}
+        self.percepts = self.model.get_percepts(self)
 
     def step(self):
         self.step_agent()
 
     def step_agent(self):
-        self.update(self.knowledge, self.percepts)
         action = self.deliberate(self.knowledge)
         percepts = self.model.do(action)
+        self.update(self.knowledge, percepts, action)
 
-    def update(self, knowledge, percepts):
-        pass
+    def update(self, knowledge, percepts, action):
+        knowledge["observations"].append(percepts)
+        knowledge["actions"].append(action)
 
     @staticmethod
     def deliberate(knowledge):
