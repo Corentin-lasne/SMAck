@@ -39,8 +39,7 @@ class baseAgent(Agent):
 
     @staticmethod
     def deliberate(knowledge):
-        
-        return random.choice(list(actions.values()))
+        return random.choice(actions)
 
 
 class greenAgent(baseAgent):
