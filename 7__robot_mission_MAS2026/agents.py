@@ -1,3 +1,12 @@
+""" 
+Group number: 12
+Group members:
+    - Tomas Stone
+    - Clara Vega
+    - Corentin Lasne
+Date of creation : 16/03/2026
+"""
+
 from mesa import Agent
 
 class baseAgent(Agent):

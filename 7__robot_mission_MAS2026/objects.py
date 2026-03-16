@@ -1,6 +1,11 @@
-# Group 12
-# Members : Clara Vega, Tomas Stone, Corentin Lasne
-# Date of creation : 2025-03-16
+""" 
+Group number: 12
+Group members:
+    - Tomas Stone
+    - Clara Vega
+    - Corentin Lasne
+Date of creation : 16/03/2026
+"""
 
 from mesa import Agent
 
