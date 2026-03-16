@@ -9,12 +9,7 @@ Date of creation : 16/03/2026
 
 from mesa import Agent
 import random
-import json
-
-with open("config.json") as f:
-    config = json.load(f)
-
-actions = config["actions"]
+from config import actions
 
 class baseAgent(Agent):
     def __init__(self, model):
