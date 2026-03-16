@@ -7,9 +7,10 @@ Group members:
 Date of creation : 16/03/2026
 """
 
-from mesa import Model, MultiGrid
-from agents import greenAgent, yellowAgent,  redAgent
-from objects import radioactivyAgent, wasteAgent
+from mesa import Model
+from mesa.space import MultiGrid
+from agents import greenAgent, yellowAgent, redAgent
+from objects import radioactivityAgent, wasteAgent
 
 class Model(Model):
     """A model with some number of agents, number of waste, and a grid cell."""
@@ -26,7 +27,8 @@ class Model(Model):
         super().__init__(seed=seed)
         self.num_agents = n_agents
         self.num_waste = n_waste
-        self.grid = MultiGrid(width, height)
+        self.grid = MultiGrid(width, height, torus=False)
+        self.robotAgents = []
         
         # Define z1, z2, z3 as third area of the grid
         self.z3 = (0, 0, width//3, height)
@@ -36,15 +38,15 @@ class Model(Model):
         # Attribute corresponding radioactivity agents to each area cell
         for x in range(self.z1[0], self.z1[2]):
             for y in range(self.z1[1], self.z1[3]):
-                self.grid.place_agent(radioactivyAgent(self, 1), (x, y))
+                self.grid.place_agent(radioactivityAgent(self, 1), (x, y))
         
         for x in range(self.z2[0], self.z2[2]):
             for y in range(self.z2[1], self.z2[3]):
-                self.grid.place_agent(radioactivyAgent(self, 2), (x, y))
+                self.grid.place_agent(radioactivityAgent(self, 2), (x, y))
         
         for x in range(self.z3[0], self.z3[2]):
             for y in range(self.z3[1], self.z3[3]):
-                self.grid.place_agent(radioactivyAgent(self, 3), (x, y))
+                self.grid.place_agent(radioactivityAgent(self, 3), (x, y))
 
         # Create waste agents and place them randomly in the area 1
         for i in range(self.num_waste):
@@ -53,28 +55,29 @@ class Model(Model):
             self.grid.place_agent(wasteAgent(self, "green"), (x, y))
 
         # Create agents and place them randomly in their area
-        robotAgents = []
         for i in range(self.num_agents[0]):
             green_agent = greenAgent(self)
-            robotAgents.append(green_agent)
+            self.robotAgents.append(green_agent)
             x = self.random.randrange(self.z1[0], self.z1[2])
             y = self.random.randrange(self.z1[1], self.z1[3])
             self.grid.place_agent(green_agent, (x, y))
             
         for i in range(self.num_agents[1]):
             yellow_agent = yellowAgent(self)
-            robotAgents.append(yellow_agent)
+            self.robotAgents.append(yellow_agent)
             x = self.random.randrange(self.z2[0], self.z2[2])
             y = self.random.randrange(self.z2[1], self.z2[3])
             self.grid.place_agent(yellow_agent, (x, y))
             
         for i in range(self.num_agents[2]):
             red_agent = redAgent(self)
-            robotAgents.append(red_agent)
+            self.robotAgents.append(red_agent)
             x = self.random.randrange(self.z3[0], self.z3[2])
             y = self.random.randrange(self.z3[1], self.z3[3])
             self.grid.place_agent(red_agent, (x, y))
         
-
     def step(self):
-        self.robotAgents.shuffle_do("step_agent")
+        agent_list = list(self.robotAgents)
+        self.random.shuffle(agent_list)
+        for agent in agent_list:
+            agent.step_agent()

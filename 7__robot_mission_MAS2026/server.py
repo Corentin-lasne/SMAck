@@ -12,17 +12,19 @@ import solara
 from matplotlib.figure import Figure
 from mesa.visualization import SolaraViz, make_plot_component, make_space_component
 from mesa.visualization.utils import update_counter
+from agents import greenAgent, yellowAgent, redAgent
 # Import the local MoneyModel.py
 from model import Model
 
 
 def robotAgent_portrayal(robotAgent):
     size = 10
-    if robotAgent.__name__ == "greenAgent":
+    color = "tab:blue"
+    if isinstance(robotAgent, greenAgent):
         color = "tab:green"
-    elif robotAgent.__name__ == "yellowAgent":
+    elif isinstance(robotAgent, yellowAgent):
         color = "tab:orange"
-    elif robotAgent.__name__ == "redAgent":
+    elif isinstance(robotAgent, redAgent):
         color = "tab:red"
     return {"size": size, "color": color}
 
@@ -55,34 +57,15 @@ def wasteZoneAgent_portrayal(wasteZoneAgent):
 #     solara.FigureMatplotlib(fig)
 
 model_params = {
-    "greenAgents": {
+    "n_agents": {
         "type": "SliderInt",
-        "value": 1,
-        "label": "Number of green agents:",
-        "min": 0,
-        "max": 10,
-        "step": 1,
+        "value": [1, 1, 1],
+        "label": "Number of agents [green, yellow, red]:",
     },
-    "yellowAgents": {
+    "n_waste": {
         "type": "SliderInt",
         "value": 1,
-        "label": "Number of yellow agents:",
-        "min": 0,
-        "max": 10,
-        "step": 1,
-    },
-    "redAgents": {
-        "type": "SliderInt",
-        "value": 1,
-        "label": "Number of red agents:",
-        "min": 0,
-        "max": 10,
-        "step": 1,
-    },
-    "greenWaste": {
-        "type": "SliderInt",
-        "value": 1,
-        "label": "Number of green waste:",
+        "label": "Number of waste:",
         "min": 0,
         "max": 10,
         "step": 1,
@@ -106,7 +89,7 @@ model_params = {
 }
 
 # Create initial model instance
-model = Model([1,0,0], 1, 100, 100)
+model = Model(n_agents=[1, 1, 1], n_waste=1, width=100, height=100)
 
 SpaceGraph = make_space_component(robotAgent_portrayal, wasteAgent_portrayal, wasteZoneAgent_portrayal)
 # GiniPlot = make_plot_component("Gini")
