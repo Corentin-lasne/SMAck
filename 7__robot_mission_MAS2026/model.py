@@ -76,6 +76,5 @@ class Model(Model):
             self.grid.place_agent(red_agent, (x, y))
         
 
-
     def step(self):
         self.robotAgents.shuffle_do("step_agent")
