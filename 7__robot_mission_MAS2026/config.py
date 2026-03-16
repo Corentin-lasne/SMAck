@@ -1,5 +1,4 @@
-{
-    "actions": {
+actions = {
         "move_up": 0,
         "move_down": 1,
         "move_right": 2,
@@ -8,4 +7,3 @@
         "drop": 5,
         "transform": 6
         }
-}

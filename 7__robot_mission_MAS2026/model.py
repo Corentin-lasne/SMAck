@@ -90,6 +90,37 @@ class Model(Model):
         self.random.shuffle(agent_list)
         for agent in agent_list:
             agent.step_agent()
+
+    def do(self, agent, action):
+        """Execute the given action for the specified agent and returns the resulting percepts."""
+        if action.startswith("move"):
+            direction = action.split("_")[1]
+            return self.move_agent(agent, direction)
+        elif action == "pick_up":
+            return self.pick_up(agent)
+        elif action == "drop":
+            return self.drop(agent)
+        elif action == "transform":
+            return self.transform(agent)
+        else:
+            raise ValueError(f"Unknown action: {action}")
+        
+    def move_agent(self, agent, direction):
+        """Move the agent in the specified direction and return the resulting percepts.
+        """
+        pass
+
+    def pick_up(self, agent):
+        """Pick up waste if the agent is on a cell with waste and return the resulting percepts."""
+        pass
+
+    def drop(self, agent):
+        """Drop waste if the agent is carrying waste and return the resulting percepts."""
+        pass
+
+    def transform(self, agent):
+        """Transform waste if the agent has the required wastes and return the resulting percepts."""
+        pass
     
     def get_percepts(self, agent):
         """Get percepts for an agent (its current position and surroundings)."""
@@ -98,8 +129,3 @@ class Model(Model):
             "position": agent.pos,
             "surrounding": self.grid.get_neighborhood(agent.pos, include_center=True) if agent.pos else []
         }
-    
-    def do(self, action):
-        """Execute an action and return percepts."""
-        # Return basic percepts (can be expanded based on specific action requirements)
-        return {"action": action, "result": "executed"}
