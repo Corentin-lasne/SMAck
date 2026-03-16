@@ -1,13 +1,14 @@
-from mesa import Agent
+""" 
+Group number: 12
+Group members:
+    - Tomas Stone
+    - Clara Vega
+    - Corentin Lasne
+Date of creation : 16/03/2026
+"""
 
-actions = {
-    "move_up": 0,
-    "move_down": 1,
-    "move_right": 2,
-    "move_left": 3,
-    "pick_up": 4,
-    "drop": 5,
-}
+from mesa import Agent
+import random
 
 class baseAgent(Agent):
     def __init__(self, model):
@@ -33,7 +34,15 @@ class baseAgent(Agent):
 
     @staticmethod
     def deliberate(knowledge):
-        pass
+        actions = {
+            "move_up": 0,
+            "move_down": 1,
+            "move_right": 2,
+            "move_left": 3,
+            "pick_up": 4,
+            "drop": 5,
+        }
+        return random.choice(list(actions.values()))
 
 
 class greenAgent(baseAgent):
