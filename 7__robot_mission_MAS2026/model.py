@@ -108,24 +108,52 @@ class Model(Model):
     def move_agent(self, agent, direction):
         """Move the agent in the specified direction and return the resulting percepts.
         """
-        pass
+        x, y = agent.pos
+        if direction == "up":
+            new_pos = (x, y + 1)
+        elif direction == "down":
+            new_pos = (x, y - 1)
+        elif direction == "left":
+            new_pos = (x - 1, y)
+        elif direction == "right":
+            new_pos = (x + 1, y)
+        else:
+            raise ValueError(f"Unknown direction: {direction}")
+
+        # Check if the new position is within the grid bounds
+        if self.grid.out_of_bounds(new_pos):
+            return self.get_percepts(agent)  # Return current percepts if move is invalid
+
+        # Move the agent to the new position
+        self.grid.move_agent(agent, new_pos)
+        return self.get_percepts(agent)
 
     def pick_up(self, agent):
         """Pick up waste if the agent is on a cell with waste and return the resulting percepts."""
-        pass
+        cell_contents = self.grid.get_cell_list_contents([agent.pos])
+        for obj in cell_contents:
+            if isinstance(obj, wasteAgent) and len(agent.inventory) < agent.max_capacity:
+                agent.inventory.append(obj)
+                self.grid.remove_agent(obj)
+                break
+        return self.get_percepts(agent)
 
     def drop(self, agent):
         """Drop waste if the agent is carrying waste and return the resulting percepts."""
-        pass
+        if agent.inventory:
+            waste = agent.inventory.pop()
+            self.grid.place_agent(waste, agent.pos)
+        return self.get_percepts(agent)
 
     def transform(self, agent):
         """Transform waste if the agent has the required wastes and return the resulting percepts."""
-        pass
+        return self.get_percepts(agent)
     
     def get_percepts(self, agent):
         """Get percepts for an agent (its current position and surroundings)."""
-        x, y = self.grid.get_cell_list_contents([(agent.pos)])[0] if agent.pos else (0, 0)
-        return {
-            "position": agent.pos,
-            "surrounding": self.grid.get_neighborhood(agent.pos, include_center=True) if agent.pos else []
-        }
+        percepts = {"position": agent.pos, "surrounding": {}}
+        if agent.pos:
+            neighborhood = self.grid.get_neighborhood(agent.pos, include_center=True)
+            for pos in neighborhood:
+                percepts["surrounding"][pos] = self.grid.get_cell_list_contents([pos])
+        return percepts

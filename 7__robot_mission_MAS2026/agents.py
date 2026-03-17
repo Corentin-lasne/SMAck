@@ -21,13 +21,15 @@ class baseAgent(Agent):
         }
 
         self.percepts = self.model.get_percepts(self)
+        self.inventory = []
 
     def step(self):
         self.step_agent()
 
     def step_agent(self):
+        self.percepts = self.model.get_percepts(self)
         action = self.deliberate(self.knowledge)
-        percepts = self.model.do(action)
+        percepts = self.model.do(self, action)
         self.update(self.knowledge, percepts, action)
 
     def update(self, knowledge, percepts, action):
@@ -36,7 +38,7 @@ class baseAgent(Agent):
 
     @staticmethod
     def deliberate(knowledge):
-        return random.choice(actions)
+        return random.choice(list(actions.keys()))
 
 
 class greenAgent(baseAgent):
