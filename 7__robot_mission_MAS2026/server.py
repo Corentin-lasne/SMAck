@@ -27,21 +27,31 @@ def robotAgent_portrayal(robotAgent):
         color = "tab:orange"
     elif isinstance(robotAgent, redAgent):
         color = "tab:red"
-    return {"size": size, "color": color}
+    return {
+        "shape": "rect",
+        "filled": True,
+        "w": 0.6,
+        "h": 0.6,
+        "color": color
+    }
 
 def wasteAgent_portrayal(wasteAgent):
-    size = 5
     if wasteAgent.waste_type == "green":
-        color = "lightgreen"
+        color = "#35F241"
     elif wasteAgent.waste_type == "yellow":
-        color = "lightyellow"
+        color = "#B8AC06"
     elif wasteAgent.waste_type == "red":
-        color = "lightcoral"
-    return {"size": size, "color": color}
+        color = "#A80303"
+    return {
+        "shape": "triangle",
+        "filled": True,
+        "w": 0.6,
+        "h": 0.6,
+        "color": color
+    }
 
 def radioactivityAgent_portrayal(radioactivityAgent):
     """Portrayal for radioactivity agents based on their level."""
-    size = 1
     # Color based on radioactivity level
     if radioactivityAgent.radioactivity < 0.33:
         color = "lightgreen"
@@ -51,7 +61,13 @@ def radioactivityAgent_portrayal(radioactivityAgent):
         color = "lightcoral"
     else:  # Waste Disposal Zone
         color = "purple"
-    return {"size": size, "color": color}
+    return {
+        "shape": "rect",
+        "filled": True,
+        "w": 1.0,
+        "h": 1.0,
+        "color": color
+    }
 
 def agent_portrayal(agent):
     """General portrayal function that handles all agent types."""
@@ -128,7 +144,7 @@ model_params = {
 }
 
 # Create initial model instance
-model = Model(n_green_agents=1, n_yellow_agents=1, n_red_agents=1, n_waste=1, width=100, height=100)
+model = Model(n_green_agents=1, n_yellow_agents=1, n_red_agents=1, n_waste=10, width=10, height=10)
 
 SpaceGraph = make_space_component(agent_portrayal)
 # GiniPlot = make_plot_component("Gini")
