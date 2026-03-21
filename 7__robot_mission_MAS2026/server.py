@@ -37,7 +37,7 @@ def robotAgent_portrayal(robotAgent):
 
 def wasteAgent_portrayal(wasteAgent):
     if wasteAgent.waste_type == "green":
-        color = "#35F241"
+        color = "#096C0F"
     elif wasteAgent.waste_type == "yellow":
         color = "#B8AC06"
     elif wasteAgent.waste_type == "red":

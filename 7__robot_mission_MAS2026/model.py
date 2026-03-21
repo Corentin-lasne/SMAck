@@ -11,10 +11,11 @@ from mesa import Model
 from mesa.space import MultiGrid
 from agents import greenAgent, yellowAgent, redAgent
 from objects import radioactivityAgent, wasteAgent
+from config import WASTE_UPGRADE
 
 class Model(Model):
     """A model with some number of agents, number of waste, and a grid cell."""
-    def __init__(self, n_green_agents=1, n_yellow_agents=1, n_red_agents=1, n_waste=1, width=100, height=100, seed=None):
+    def __init__(self, n_green_agents=1, n_yellow_agents=1, n_red_agents=1, n_waste=1, width=10, height=10, seed=None):
         """Initialize the model.
 
         Args:
@@ -42,6 +43,7 @@ class Model(Model):
 
         # Create the Waste Disposal Zone at the very right of the grid, at random y position
         waste_disposal_zone_y = self.random.randrange(0, height)
+        self.waste_disposal_zone = (width-1, waste_disposal_zone_y)
         self.grid.place_agent(radioactivityAgent(self, 4), (width-1, waste_disposal_zone_y))
 
         # Attribute corresponding radioactivity agents to each area cell
@@ -59,7 +61,7 @@ class Model(Model):
                     self.grid.place_agent(radioactivityAgent(self, 3), (x, y))
 
         # Create waste agents and place them randomly in the area 1
-        for i in range(self.num_waste):
+        for _ in range(self.num_waste):
             x = self.random.randrange(self.z1[0], self.z1[2])
             y = self.random.randrange(self.z1[1], self.z1[3])
             waste = wasteAgent(self, "green")
@@ -67,19 +69,19 @@ class Model(Model):
             self.grid.place_agent(waste, (x, y))
 
         # Create agents and place them randomly in their area
-        for i in range(self.num_green_agents):
+        for _ in range(self.num_green_agents):
             green_agent = greenAgent(self)
             self.robotAgents.append(green_agent)
             pos = self.get_random_free_robot_position(self.z1)
             self.grid.place_agent(green_agent, pos)
             
-        for i in range(self.num_yellow_agents):
+        for _ in range(self.num_yellow_agents):
             yellow_agent = yellowAgent(self)
             self.robotAgents.append(yellow_agent)
             pos = self.get_random_free_robot_position(self.z2)
             self.grid.place_agent(yellow_agent, pos)
             
-        for i in range(self.num_red_agents):
+        for _ in range(self.num_red_agents):
             red_agent = redAgent(self)
             self.robotAgents.append(red_agent)
             pos = self.get_random_free_robot_position(self.z3)
@@ -126,33 +128,20 @@ class Model(Model):
             raise ValueError(f"Unknown action: {action}")
         
     def move_agent(self, agent, direction):
-        """Move the agent in the specified direction and return the resulting percepts.
-        """
         x, y = agent.pos
-        if direction == "up":
-            new_pos = (x, y + 1)
-        elif direction == "down":
-            new_pos = (x, y - 1)
-        elif direction == "left":
-            new_pos = (x - 1, y)
-        elif direction == "right":
-            new_pos = (x + 1, y)
-        else:
+        delta = {"up": (0, 1), "down": (0, -1), "left": (-1, 0), "right": (1, 0)}
+        if direction not in delta:
             raise ValueError(f"Unknown direction: {direction}")
-
-        # Check if the new position is within the grid bounds
+        dx, dy = delta[direction]
+        new_pos = (x + dx, y + dy)
+ 
         if self.grid.out_of_bounds(new_pos):
-            return self.get_percepts(agent)  # Return current percepts if move is invalid
-
-        # Enforce per-agent zone constraints.
+            return self.get_percepts(agent)
         if not self.is_position_allowed(agent, new_pos):
-            return self.get_percepts(agent)  # Return current percepts if move is invalid
-
-        # Prevent two robot agents from occupying the same cell.
+            return self.get_percepts(agent)
         if not self.is_robot_cell_free(new_pos, moving_agent=agent):
-            return self.get_percepts(agent)  # Return current percepts if move is invalid
-
-        # Move the agent to the new position
+            return self.get_percepts(agent)
+ 
         self.grid.move_agent(agent, new_pos)
         return self.get_percepts(agent)
 
@@ -182,9 +171,11 @@ class Model(Model):
         """Pick up waste if the agent is on a cell with waste and return the resulting percepts."""
         cell_contents = self.grid.get_cell_list_contents([agent.pos])
         for obj in cell_contents:
-            if isinstance(obj, wasteAgent) and len(agent.inventory) < agent.max_capacity:
+            if isinstance(obj, wasteAgent) and len(agent.inventory) < agent.max_capacity and obj.waste_type == agent.target_waste_type :
                 agent.inventory.append(obj)
                 self.grid.remove_agent(obj)
+                if obj in self.wasteAgents:
+                    self.wasteAgents.remove(obj)
                 break
         return self.get_percepts(agent)
 
@@ -193,10 +184,32 @@ class Model(Model):
         if agent.inventory:
             waste = agent.inventory.pop()
             self.grid.place_agent(waste, agent.pos)
+            self.wasteAgents.append(waste)
         return self.get_percepts(agent)
 
     def transform(self, agent):
         """Transform waste if the agent has the required wastes and return the resulting percepts."""
+        target = agent.target_waste_type
+        result = agent.resulted_waste_type
+ 
+        if result is None:
+            return self.get_percepts(agent)
+ 
+        matching = [w for w in agent.inventory if w.waste_type == target]
+        if len(matching) < 2:
+            return self.get_percepts(agent)  # not enough waste to transform
+ 
+        # Consume 2 source wastes
+        for w in matching[:2]:
+            agent.inventory.remove(w)
+            # w is already off the grid (picked up), just discard it
+ 
+        # Produce 1 result waste and place directly in inventory
+        new_waste = wasteAgent(self, result)
+        agent.inventory.append(new_waste)
+        # Update agent's target for the next phase
+        agent.target_waste_type = result
+ 
         return self.get_percepts(agent)
     
     def get_percepts(self, agent):
