@@ -99,14 +99,23 @@ class baseAgent(Agent):
     
     def _move_toward(self, target):
         """
-        Return the best action to get closer to *target* using BFS on known_map,
-        falling back to greedy Manhattan if no path is known.
+        Return the best *safe* action to get closer to *target*.
+ 
+        Strategy:
+        1. BFS on known_map; only the first step must be currently free.
+        2. If BFS path has a blocked first step, fall through to greedy.
+        3. Greedy fallback among safe moves with Manhattan + small random jitter
+           to break the symmetry that causes face-to-face deadlocks.
         """
-        # BFS through known positions
+        from collections import deque
+ 
         start = self.pos
         if start == target:
             return None
  
+        safe_first_steps = {tpos for _, tpos in self._safe_move_actions(self.percepts)}
+ 
+        # BFS — only the very first step must be currently free
         queue = deque([(start, [])])
         seen  = {start}
         while queue:
@@ -121,17 +130,21 @@ class baseAgent(Agent):
                 seen.add(npos)
                 new_path = path + [npos]
                 if npos == target:
-                    # Return action toward first step
-                    next_pos = new_path[0]
-                    return self._action_for_step(start, next_pos)
+                    first = new_path[0]
+                    if first in safe_first_steps:
+                        return self._action_for_step(start, first)
+                    break  # path found but first step blocked → greedy fallback
                 queue.append((npos, new_path))
  
-        # Fallback: greedy among safe moves
+        # Greedy fallback with jitter to break ties / deadlocks
         safe = self._safe_move_actions(self.percepts)
         if not safe:
             return None
-        best = min(safe, key=lambda a: manhattan(a[1], target))
-        return best[0]
+        safe_sorted = sorted(
+            safe,
+            key=lambda a: manhattan(a[1], target) + self.random.random() * 0.5
+        )
+        return safe_sorted[0][0]
  
     def _action_for_step(self, frm, to):
         dx = to[0] - frm[0]
@@ -144,9 +157,9 @@ class baseAgent(Agent):
  
     def _explore_action(self):
         """
-        Move toward the nearest unvisited cell reachable within the agent's zones.
+        Move toward the nearest frontier cell (known cell bordering an unknown one).
+        Falls back to a random safe move to escape deadlocks.
         """
-        # Collect frontier: known cells adjacent to unknown cells
         frontier = []
         for pos in self.known_map:
             if not self.model.is_position_allowed(self, pos):
@@ -157,16 +170,20 @@ class baseAgent(Agent):
                     break
  
         if frontier:
-            target = min(frontier, key=lambda p: manhattan(self.pos, p))
+            # Jitter breaks ties between equidistant frontier cells
+            target = min(
+                frontier,
+                key=lambda p: manhattan(self.pos, p) + self.random.random() * 0.5
+            )
             action = self._move_toward(target)
             if action:
                 return action
  
-        # Last resort: random safe move
-        safe = self._safe_moves()
+        # No frontier or all paths blocked → random safe move to escape
+        safe = self._safe_move_actions(self.percepts)
         if safe:
             return self.random.choice(safe)[0]
-        return "move_right"
+        return "move_up"
 
     def deliberate(self, knowledge):
         raise NotImplementedError("This method should be implemented by subclasses")
@@ -179,8 +196,7 @@ class greenAgent(baseAgent):
     max_capacity = 2
 
     def deliberate(self):
-        inv = self.inventory
-        inv_types = [w.waste_type for w in inv]
+        inv_types = [w.waste_type for w in self.inventory]
  
         # Transform into yellow waste
         if inv_types.count("green") == 2:
@@ -197,7 +213,7 @@ class greenAgent(baseAgent):
         # Pick up green waste if on it and not full
         current_contents = self.percepts.get("surrounding", {}).get(self.pos, [])
         if any(isinstance(o, wasteAgent) and o.waste_type == "green" for o in current_contents):
-            if len(inv) < self.max_capacity:
+            if len(self.inventory) < self.max_capacity:
                 return "pick_up"
  
         # Go toward closest green waste in known map
@@ -220,8 +236,7 @@ class yellowAgent(baseAgent):
     max_capacity = 2
  
     def deliberate(self):
-        inv = self.inventory
-        inv_types = [w.waste_type for w in inv]
+        inv_types = [w.waste_type for w in self.inventory]
  
         if inv_types.count("yellow") == 2:
             return "transform"
@@ -235,7 +250,7 @@ class yellowAgent(baseAgent):
  
         current_contents = self.percepts.get("surrounding", {}).get(self.pos, [])
         if any(isinstance(o, wasteAgent) and o.waste_type == "yellow" for o in current_contents):
-            if len(inv) < self.max_capacity:
+            if len(self.inventory) < self.max_capacity:
                 return "pick_up"
  
         yellow_targets = [p for p, wt in self.waste_map.items()

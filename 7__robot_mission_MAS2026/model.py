@@ -198,17 +198,13 @@ class Model(Model):
         matching = [w for w in agent.inventory if w.waste_type == target]
         if len(matching) < 2:
             return self.get_percepts(agent)  # not enough waste to transform
- 
-        # Consume 2 source wastes
-        for w in matching[:2]:
-            agent.inventory.remove(w)
-            # w is already off the grid (picked up), just discard it
+
+        else :
+            agent.inventory = []
  
         # Produce 1 result waste and place directly in inventory
         new_waste = wasteAgent(self, result)
         agent.inventory.append(new_waste)
-        # Update agent's target for the next phase
-        agent.target_waste_type = result
  
         return self.get_percepts(agent)
     
