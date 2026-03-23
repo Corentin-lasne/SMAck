@@ -7,14 +7,19 @@ Group members:
 Date of creation : 16/03/2026
 """
 
+
+
 from mesa import Model
 from mesa.space import MultiGrid
 from agents import greenAgent, yellowAgent, redAgent
 from objects import radioactivityAgent, wasteAgent
-from config import WASTE_UPGRADE
 
 class Model(Model):
-    """A model with some number of agents, number of waste, and a grid cell."""
+    """Environment authority for movement, manipulation, communication, and metrics.
+
+    Robot agents choose actions, but this class remains the single source of truth:
+    it validates legal actions at execution time and applies state transitions.
+    """
     def __init__(self, n_green_agents=1, n_yellow_agents=1, n_red_agents=1, n_green_waste=1, n_yellow_waste=0, n_red_waste=0, width=10, height=10, seed=None):
         """Initialize the model.
 
@@ -40,6 +45,10 @@ class Model(Model):
         self.grid = MultiGrid(width, height, torus=False)
         self.robotAgents = []
         self.wasteAgents = []
+        self.mailboxes = {}
+        self.pending_messages = []
+        self.query_counter = 0
+        self.disposed_red_count = 0
         
         # Metrics tracking
         self.waste_count_history = []  # [{"step": 0, "green": 1, "yellow": 0, "red": 0, "total": 1}, ...]
@@ -101,21 +110,25 @@ class Model(Model):
             self.robotAgents.append(green_agent)
             pos = self.get_random_free_robot_position(self.z1)
             self.grid.place_agent(green_agent, pos)
+            self.mailboxes[green_agent.unique_id] = []
             
         for _ in range(self.num_yellow_agents):
             yellow_agent = yellowAgent(self)
             self.robotAgents.append(yellow_agent)
             pos = self.get_random_free_robot_position(self.z2)
             self.grid.place_agent(yellow_agent, pos)
+            self.mailboxes[yellow_agent.unique_id] = []
             
         for _ in range(self.num_red_agents):
             red_agent = redAgent(self)
             self.robotAgents.append(red_agent)
             pos = self.get_random_free_robot_position(self.z3)
             self.grid.place_agent(red_agent, pos)
+            self.mailboxes[red_agent.unique_id] = []
         
     def step(self):
-        self.steps += 1
+        """Advance the simulation by one step using shuffled robot activation."""
+        self._deliver_pending_messages()
         agent_list = list(self.robotAgents)
         self.random.shuffle(agent_list)
         for agent in agent_list:
@@ -191,20 +204,130 @@ class Model(Model):
         raise RuntimeError("No free position available to place a robot in the selected zone")
 
     def do(self, agent, action):
-        """Execute the given action for the specified agent and returns the resulting percepts."""
+        """Environment-side legal validation with random legal fallback for invalid actions."""
+        if isinstance(action, dict) and action.get("type") == "send_message":
+            message = action.get("message")
+            if isinstance(message, dict) and message.get("type"):
+                self.send_message(agent, message)
+                return self.get_percepts(agent)
+
+        legal_actions = self.get_legal_actions(agent)
+        if action not in legal_actions:
+            if not legal_actions:
+                return self.get_percepts(agent)
+            action = self.random.choice(legal_actions)
+
         if action.startswith("move"):
             direction = action.split("_")[1]
             return self.move_agent(agent, direction)
-        elif action == "pick_up":
+        if action == "pick_up":
             return self.pick_up(agent)
-        elif action == "drop":
+        if action == "drop":
             return self.drop(agent)
-        elif action == "transform":
+        if action == "transform":
             return self.transform(agent)
+        return self.get_percepts(agent)
+
+    def make_query_id(self):
+        """Return a unique ID used to match asynchronous request/reply messages."""
+        self.query_counter += 1
+        return f"q-{self.steps}-{self.query_counter}"
+
+    def _deliver_pending_messages(self):
+        """Deliver queued messages at step boundaries (asynchronous mailbox model)."""
+        for recipient_id, envelope in self.pending_messages:
+            if recipient_id in self.mailboxes:
+                self.mailboxes[recipient_id].append(envelope)
+        self.pending_messages = []
+
+    def read_messages(self, agent):
+        """Return and clear all messages currently available to an agent."""
+        messages = self.mailboxes.get(agent.unique_id, [])
+        self.mailboxes[agent.unique_id] = []
+        return messages
+
+    def send_message(self, sender, message):
+        """Queue a direct, role-based, or broadcast message for next-step delivery."""
+        envelope = {
+            "from": sender.unique_id,
+            "type": message.get("type"),
+            "payload": message.get("payload", {}),
+        }
+
+        direct_target = message.get("to")
+        role_target = message.get("to_role")
+
+        recipients = []
+        if direct_target is not None:
+            recipients = [direct_target]
+        elif role_target is not None:
+            recipients = [a.unique_id for a in self.robotAgents if getattr(a, "agent_role", None) == role_target and a is not sender]
         else:
-            raise ValueError(f"Unknown action: {action}")
+            recipients = [a.unique_id for a in self.robotAgents if a is not sender]
+
+        for recipient_id in recipients:
+            self.pending_messages.append((recipient_id, envelope))
+
+    def get_legal_actions(self, agent):
+        """Compute legal primitive actions from current world state."""
+        legal = []
+        x, y = agent.pos
+        move_targets = {
+            "move_up": (x, y + 1),
+            "move_down": (x, y - 1),
+            "move_right": (x + 1, y),
+            "move_left": (x - 1, y),
+        }
+
+        for action_name, target_pos in move_targets.items():
+            if self.grid.out_of_bounds(target_pos):
+                continue
+            if not self.is_position_allowed(agent, target_pos):
+                continue
+            if not self.is_robot_cell_free(target_pos, moving_agent=agent):
+                continue
+            legal.append(action_name)
+
+        if self._can_pick_up(agent):
+            legal.append("pick_up")
+
+        if len(agent.inventory) > 0:
+            legal.append("drop")
+
+        if self._can_transform(agent):
+            legal.append("transform")
+
+        return legal
+
+    def _can_pick_up(self, agent):
+        """Check whether the agent can legally pick up a waste now."""
+        if len(agent.inventory) >= agent.max_capacity:
+            return False
+
+        target_type = getattr(agent, "target_waste_type", None)
+        task = getattr(agent, "active_task", None)
+        if task is not None and not task.get("picked", False):
+            task_type = task.get("waste_type")
+            if task_type:
+                target_type = task_type
+
+        if target_type is None:
+            return False
+
+        cell_contents = self.grid.get_cell_list_contents([agent.pos])
+        return any(isinstance(obj, wasteAgent) and obj.waste_type == target_type for obj in cell_contents)
+
+    def _can_transform(self, agent):
+        """Check whether the agent inventory satisfies transform preconditions."""
+        target = getattr(agent, "target_waste_type", None)
+        result = getattr(agent, "result_waste_type", None)
+        if result is None or target is None:
+            return False
+        matching = [w for w in agent.inventory if w.waste_type == target]
+        return len(matching) >= 2
         
     def move_agent(self, agent, direction):
+        """Move an agent by one cardinal step if bounds/zone/occupancy constraints allow."""
         x, y = agent.pos
         delta = {"up": (0, 1), "down": (0, -1), "left": (-1, 0), "right": (1, 0)}
         if direction not in delta:
@@ -245,10 +368,17 @@ class Model(Model):
         return zone_name in allowed_zones
 
     def pick_up(self, agent):
-        """Pick up waste if the agent is on a cell with waste and return the resulting percepts."""
+        """Transfer one eligible waste from grid cell to agent inventory."""
+        target_type = agent.target_waste_type
+        task = getattr(agent, "active_task", None)
+        if task is not None and not task.get("picked", False):
+            task_target = task.get("waste_type")
+            if task_target:
+                target_type = task_target
+
         cell_contents = self.grid.get_cell_list_contents([agent.pos])
         for obj in cell_contents:
-            if isinstance(obj, wasteAgent) and len(agent.inventory) < agent.max_capacity and obj.waste_type == agent.target_waste_type :
+            if isinstance(obj, wasteAgent) and len(agent.inventory) < agent.max_capacity and obj.waste_type == target_type:
                 agent.inventory.append(obj)
                 self.grid.remove_agent(obj)
                 if obj in self.wasteAgents:
@@ -257,19 +387,19 @@ class Model(Model):
         return self.get_percepts(agent)
 
     def drop(self, agent):
-        """Drop waste if the agent is carrying waste and return the resulting percepts."""
+        """Drop one carried waste into the current cell or dispose red waste at disposal zone."""
         if agent.inventory:
             waste = agent.inventory.pop()
             if waste.waste_type == "red" and agent.pos == self.waste_disposal_zone:
                 # Disposed!
-                pass
+                self.disposed_red_count += 1
             else:
                 self.grid.place_agent(waste, agent.pos)
                 self.wasteAgents.append(waste)
         return self.get_percepts(agent)
 
     def transform(self, agent):
-        """Transform waste if the agent has the required wastes and return the resulting percepts."""
+        """Consume two target wastes from inventory and produce one upgraded waste."""
         target = agent.target_waste_type
         result = agent.result_waste_type
  
@@ -290,7 +420,7 @@ class Model(Model):
         return self.get_percepts(agent)
     
     def get_percepts(self, agent):
-        """Get percepts for an agent (its current position and surroundings)."""
+        """Return local percepts: current position and Moore neighborhood contents."""
         percepts = {"position": agent.pos, "surrounding": {}}
         if agent.pos:
             # Get just the 8 surrounding cells (including diagonals) and the current cell contents
