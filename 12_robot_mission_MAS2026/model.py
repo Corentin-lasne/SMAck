@@ -35,6 +35,7 @@ class Model(Model):
         self.grid = MultiGrid(width, height, torus=False)
         self.robotAgents = []
         self.wasteAgents = []
+        self._mailboxes = {}
         
         # Define z1, z2, z3 as third area of the grid
         self.z1 = (0, 0, width//3, height)
@@ -72,20 +73,68 @@ class Model(Model):
         for _ in range(self.num_green_agents):
             green_agent = greenAgent(self)
             self.robotAgents.append(green_agent)
+            self._mailboxes[green_agent.unique_id] = []
             pos = self.get_random_free_robot_position(self.z1)
             self.grid.place_agent(green_agent, pos)
             
         for _ in range(self.num_yellow_agents):
             yellow_agent = yellowAgent(self)
             self.robotAgents.append(yellow_agent)
+            self._mailboxes[yellow_agent.unique_id] = []
             pos = self.get_random_free_robot_position(self.z2)
             self.grid.place_agent(yellow_agent, pos)
             
         for _ in range(self.num_red_agents):
             red_agent = redAgent(self)
             self.robotAgents.append(red_agent)
+            self._mailboxes[red_agent.unique_id] = []
             pos = self.get_random_free_robot_position(self.z3)
             self.grid.place_agent(red_agent, pos)
+
+    def send_message(self, sender, target_team, topic, payload):
+        """Send a message to all agents of a given class name, except sender."""
+        for agent in self.robotAgents:
+            if agent is sender:
+                continue
+            if agent.__class__.__name__ != target_team:
+                continue
+            self._mailboxes.setdefault(agent.unique_id, []).append(
+                {
+                    "sender_id": sender.unique_id,
+                    "topic": topic,
+                    **payload,
+                }
+            )
+
+    def get_messages(self, agent):
+        """Read and clear pending messages for one agent."""
+        messages = self._mailboxes.get(agent.unique_id, [])
+        self._mailboxes[agent.unique_id] = []
+        return messages
+
+    def _notify_border_drop(self, agent, waste, pos):
+        """Notify relevant teams when waste is dropped on transfer borders."""
+        x, _ = pos
+
+        # Green/zone-1 side drops yellow for yellow robots at z1/z2 border.
+        z1_east = self.z1[2] - 1
+        if waste.waste_type == "yellow" and x == z1_east:
+            self.send_message(
+                agent,
+                "yellowAgent",
+                "border_drop",
+                {"position": pos, "waste_type": "yellow"},
+            )
+
+        # Yellow/zone-2 side drops red for red robots at z2/z3 border.
+        z2_east = self.z2[2] - 1
+        if waste.waste_type == "red" and x == z2_east:
+            self.send_message(
+                agent,
+                "redAgent",
+                "border_drop",
+                {"position": pos, "waste_type": "red"},
+            )
         
     def step(self):
         agent_list = list(self.robotAgents)
@@ -185,6 +234,7 @@ class Model(Model):
             waste = agent.inventory.pop()
             self.grid.place_agent(waste, agent.pos)
             self.wasteAgents.append(waste)
+            self._notify_border_drop(agent, waste, agent.pos)
         return self.get_percepts(agent)
 
     def transform(self, agent):

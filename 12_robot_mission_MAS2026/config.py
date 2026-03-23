@@ -1,3 +1,12 @@
+""" 
+Group number: 12
+Group members:
+    - Tomas Stone
+    - Clara Vega
+    - Corentin Lasne
+Date of creation : 18/03/2026
+"""
+
 actions = {
         "move_up": 0,
         "move_down": 1,
