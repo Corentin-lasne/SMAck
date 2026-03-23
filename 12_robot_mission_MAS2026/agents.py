@@ -266,24 +266,27 @@ class yellowAgent(baseAgent):
             action = self._move_toward(closest)
             return action or self._explore_action()
         
-        # 5. Scout the Green Drop Zone (Z1 East Border) for new yellow waste
-        scout_x = self.model.z1[2] - 1
-        
-        # Persistent Patrol Logic:
-        # If no target, or we reached it, pick a new one at the opposite vertical end
-        # This forces the agent to traverse the full height of the drop zone
+        # 5. Scout: Mix between patrolling the drop zone (handoffs) and exploring the zone (initial waste)
         if self.scout_target is None or self.pos == self.scout_target:
-             current_y = self.pos[1]
-             h = self.model.grid.height
-             
-             # If generally in the top half, go to bottom third.
-             # If generally in bottom half, go to top third.
-             if current_y > h // 2:
-                 new_y = random.randint(0, h // 3)
-             else:
-                 new_y = random.randint(2 * h // 3, h - 1)
-                 
-             self.scout_target = (scout_x, new_y)
+            # 50% chance to check the border, 50% chance to explore deep into Z2
+            if random.random() < 0.5:
+                # Patrol the border (Z1 East Border)
+                scout_x = self.model.z1[2] - 1
+                current_y = self.pos[1]
+                h = self.model.grid.height
+                if current_y > h // 2:
+                    new_y = random.randint(0, h // 3)
+                else:
+                    new_y = random.randint(2 * h // 3, h - 1)
+                self.scout_target = (scout_x, new_y)
+            else:
+                # Explore Z2 for initial waste
+                # Pick a random point in Z2
+                x_min, y_min, x_max, y_max = self.model.z2
+                # Ensure we pick a valid x inside Z2 (x_max is exclusive in range, but grid is 0-indexed)
+                rand_x = random.randint(x_min, x_max - 1)
+                rand_y = random.randint(y_min, y_max - 1)
+                self.scout_target = (rand_x, rand_y)
              
         action = self._move_toward(self.scout_target)
         return action or self._explore_action()
@@ -322,18 +325,25 @@ class redAgent(baseAgent):
             action = self._move_toward(closest)
             return action or self._explore_action()
             
-        # 4. Scout the Yellow Drop Zone (Z2 East Border)
-        scout_x = self.model.z2[2] - 1
-        
-        # Persistent Patrol Logic (same as Yellow)
+        # 4. Scout: Mix between patrolling the drop zone (handoffs) and exploring the zone (initial waste)
         if self.scout_target is None or self.pos == self.scout_target:
-             current_y = self.pos[1]
-             h = self.model.grid.height
-             if current_y > h // 2:
-                 new_y = random.randint(0, h // 3)
-             else:
-                 new_y = random.randint(2 * h // 3, h - 1)
-             self.scout_target = (scout_x, new_y)
+            # 50% chance to check the border, 50% chance to explore deep into Z3
+            if random.random() < 0.5:
+                # Patrol the border (Z2 East Border)
+                scout_x = self.model.z2[2] - 1
+                current_y = self.pos[1]
+                h = self.model.grid.height
+                if current_y > h // 2:
+                    new_y = random.randint(0, h // 3)
+                else:
+                    new_y = random.randint(2 * h // 3, h - 1)
+                self.scout_target = (scout_x, new_y)
+            else:
+                # Explore Z3 for initial waste
+                x_min, y_min, x_max, y_max = self.model.z3
+                rand_x = random.randint(x_min, x_max - 1)
+                rand_y = random.randint(y_min, y_max - 1)
+                self.scout_target = (rand_x, rand_y)
              
         action = self._move_toward(self.scout_target)
         return action or self._explore_action()

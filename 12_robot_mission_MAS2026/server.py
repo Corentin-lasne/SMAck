@@ -135,7 +135,7 @@ model_params = {
         "value": 1,
         "label": "Number of green agents:",
         "min": 0,
-        "max": 100,
+        "max": 30,
         "step": 1,
     },
     "n_yellow_agents": {
@@ -143,7 +143,7 @@ model_params = {
         "value": 1,
         "label": "Number of yellow agents:",
         "min": 0,
-        "max": 100,
+        "max": 30,
         "step": 1,
     },
     "n_red_agents": {
@@ -154,12 +154,28 @@ model_params = {
         "max": 10,
         "step": 1,
     },
-    "n_waste": {
+    "n_green_waste": {
         "type": "SliderInt",
-        "value": 1,
-        "label": "Number of waste:",
+        "value": 10,
+        "label": "Initial Green Waste:",
         "min": 0,
-        "max": 100,
+        "max": 50,
+        "step": 1,
+    },
+    "n_yellow_waste": {
+        "type": "SliderInt",
+        "value": 0,
+        "label": "Initial Yellow Waste:",
+        "min": 0,
+        "max": 50,
+        "step": 1,
+    },
+    "n_red_waste": {
+        "type": "SliderInt",
+        "value": 0,
+        "label": "Initial Red Waste:",
+        "min": 0,
+        "max": 50,
         "step": 1,
     },
     "width": {
@@ -167,7 +183,7 @@ model_params = {
         "value": 30,
         "label": "Width:",
         "min": 5,
-        "max": 500,
+        "max": 50,
         "step": 1,
     },
     "height": {
@@ -175,13 +191,13 @@ model_params = {
         "value": 30,
         "label": "Height:",
         "min": 5,
-        "max": 500,
+        "max": 50,
         "step": 1,
     }
 }
 
 # Create initial model instance
-model = Model(n_green_agents=1, n_yellow_agents=1, n_red_agents=1, n_waste=10, width=10, height=10)
+model = Model(n_green_agents=1, n_yellow_agents=1, n_red_agents=1, n_green_waste=10, n_yellow_waste=0, n_red_waste=0, width=30, height=30)
 
 SpaceGraph = make_space_component(agent_portrayal)
 
@@ -192,6 +208,4 @@ page = SolaraViz(
     model_params=model_params,
     name="Radioactive Waste Collection",
 )
-# This is required to render the visualization in the Jupyter notebook
-page
 # to start : "solara run server.py"
