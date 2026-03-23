@@ -43,10 +43,8 @@ def wasteAgent_portrayal(wasteAgent):
     elif wasteAgent.waste_type == "red":
         color = "#A80303"
     return {
-        "shape": "triangle",
-        "filled": True,
-        "w": 0.6,
-        "h": 0.6,
+        "marker" : "t",
+        "size" : 300,
         "color": color
     }
 
@@ -62,10 +60,8 @@ def radioactivityAgent_portrayal(radioactivityAgent):
     else:  # Waste Disposal Zone
         color = "purple"
     return {
-        "shape": "rect",
-        "filled": True,
-        "w": 1.0,
-        "h": 1.0,
+        "marker": "s",
+        "size" : 400,
         "color": color
     }
 
