@@ -236,8 +236,12 @@ class Model(Model):
         """Drop waste if the agent is carrying waste and return the resulting percepts."""
         if agent.inventory:
             waste = agent.inventory.pop()
-            self.grid.place_agent(waste, agent.pos)
-            self.wasteAgents.append(waste)
+            if waste.waste_type == "red" and agent.pos == self.waste_disposal_zone:
+                # If dropping red waste in the disposal zone, it is removed from the simulation
+                pass
+            else:
+                self.grid.place_agent(waste, agent.pos)
+                self.wasteAgents.append(waste)
         return self.get_percepts(agent)
 
     def transform(self, agent):
