@@ -29,7 +29,7 @@ class baseAgent(Agent):
     """
 
     target_waste_type = None
-    resulted_waste_type = None
+    result_waste_type = None
     allowed_zones = []
     max_capacity = 2
 
@@ -192,7 +192,7 @@ class greenAgent(baseAgent):
 
     allowed_zones = ["z1"]
     target_waste_type = "green"
-    resulted_waste_type = "yellow"
+    result_waste_type = "yellow"
     max_capacity = 2
 
     def deliberate(self):

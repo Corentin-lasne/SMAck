@@ -190,7 +190,7 @@ class Model(Model):
     def transform(self, agent):
         """Transform waste if the agent has the required wastes and return the resulting percepts."""
         target = agent.target_waste_type
-        result = agent.resulted_waste_type
+        result = agent.result_waste_type
  
         if result is None:
             return self.get_percepts(agent)

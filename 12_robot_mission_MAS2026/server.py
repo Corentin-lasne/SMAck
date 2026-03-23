@@ -19,7 +19,6 @@ from model import Model
 
 
 def robotAgent_portrayal(robotAgent):
-    size = 10
     color = "tab:blue"
     if isinstance(robotAgent, greenAgent):
         color = "tab:green"
@@ -28,11 +27,9 @@ def robotAgent_portrayal(robotAgent):
     elif isinstance(robotAgent, redAgent):
         color = "tab:red"
     return {
-        "shape": "rect",
-        "filled": True,
-        "w": 0.6,
-        "h": 0.6,
-        "color": color
+        "size" : 600,
+        "color": color,
+        "zorder": 2,
     }
 
 def wasteAgent_portrayal(wasteAgent):
@@ -43,9 +40,9 @@ def wasteAgent_portrayal(wasteAgent):
     elif wasteAgent.waste_type == "red":
         color = "#A80303"
     return {
-        "marker" : "t",
-        "size" : 300,
-        "color": color
+        "size" : 600,
+        "color": color,
+        "zorder": 1,
     }
 
 def radioactivityAgent_portrayal(radioactivityAgent):
@@ -61,8 +58,9 @@ def radioactivityAgent_portrayal(radioactivityAgent):
         color = "purple"
     return {
         "marker": "s",
-        "size" : 400,
-        "color": color
+        "size" : 600,
+        "color": color,
+        "zorder": 0
     }
 
 def agent_portrayal(agent):
