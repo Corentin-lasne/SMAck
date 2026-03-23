@@ -36,6 +36,10 @@ class Model(Model):
         self.robotAgents = []
         self.wasteAgents = []
         
+        # Metrics tracking
+        self.waste_count_history = []  # [{"step": 0, "green": 1, "yellow": 0, "red": 0, "total": 1}, ...]
+        self.cumulative_distance_history = []  # [{"step": 0, "distance": X}, ...]
+        
         # Define z1, z2, z3 as third area of the grid
         self.z1 = (0, 0, width//3, height)
         self.z2 = (width//3, 0, 2*width//3, height)
@@ -92,6 +96,55 @@ class Model(Model):
         self.random.shuffle(agent_list)
         for agent in agent_list:
             agent.step_agent()
+        
+        # Record metrics at the end of each step
+        self._record_metrics()
+    
+    def _record_metrics(self):
+        """Record waste count and cumulative distance metrics."""
+        # Count wastes by type
+        green_count = sum(1 for w in self.wasteAgents if w.waste_type == "green")
+        yellow_count = sum(1 for w in self.wasteAgents if w.waste_type == "yellow")
+        red_count = sum(1 for w in self.wasteAgents if w.waste_type == "red")
+        
+        # Count wastes in robots' inventories
+        for agent in self.robotAgents:
+            for waste in agent.inventory:
+                if waste.waste_type == "green":
+                    green_count += 1
+                elif waste.waste_type == "yellow":
+                    yellow_count += 1
+                elif waste.waste_type == "red":
+                    red_count += 1
+        
+        total_count = green_count + yellow_count + red_count
+        
+        self.waste_count_history.append({
+            "step": self.steps,
+            "green": green_count,
+            "yellow": yellow_count,
+            "red": red_count,
+            "total": total_count
+        })
+        
+        # Calculate cumulative distance to disposal zone
+        cumulative_distance = 0
+        
+        # Distance of wastes on the map
+        for waste in self.wasteAgents:
+            dist = abs(waste.pos[0] - self.waste_disposal_zone[0]) + abs(waste.pos[1] - self.waste_disposal_zone[1])
+            cumulative_distance += dist
+        
+        # Distance of wastes in robots' inventories (use robot position)
+        for agent in self.robotAgents:
+            for waste in agent.inventory:
+                dist = abs(agent.pos[0] - self.waste_disposal_zone[0]) + abs(agent.pos[1] - self.waste_disposal_zone[1])
+                cumulative_distance += dist
+        
+        self.cumulative_distance_history.append({
+            "step": self.steps,
+            "distance": cumulative_distance
+        })
 
     def is_robot_cell_free(self, pos, moving_agent=None):
         """Return True if no other robot agent is on this cell."""
