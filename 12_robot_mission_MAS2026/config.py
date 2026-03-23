@@ -7,3 +7,5 @@ actions = {
         "drop": 5,
         "transform": 6
         }
+
+WASTE_UPGRADE = {"green": "yellow", "yellow": "red"}
