@@ -41,6 +41,7 @@ class baseAgent(Agent):
         self.waste_map = {}
         self.visited = set()
         self.target_pos = None
+        self.scout_target = None  # Persistent target for patrolling/scouting
 
     def step(self):
         self.step_agent()
@@ -267,13 +268,24 @@ class yellowAgent(baseAgent):
         
         # 5. Scout the Green Drop Zone (Z1 East Border) for new yellow waste
         scout_x = self.model.z1[2] - 1
-        scout_target = (scout_x, random.randint(0, self.model.grid.height - 1))
         
-        # If we are already near the scout area, explore locally, otherwise head there
-        if manhattan(self.pos, scout_target) < 3:
-             return self._explore_action()
+        # Persistent Patrol Logic:
+        # If no target, or we reached it, pick a new one at the opposite vertical end
+        # This forces the agent to traverse the full height of the drop zone
+        if self.scout_target is None or self.pos == self.scout_target:
+             current_y = self.pos[1]
+             h = self.model.grid.height
              
-        action = self._move_toward(scout_target)
+             # If generally in the top half, go to bottom third.
+             # If generally in bottom half, go to top third.
+             if current_y > h // 2:
+                 new_y = random.randint(0, h // 3)
+             else:
+                 new_y = random.randint(2 * h // 3, h - 1)
+                 
+             self.scout_target = (scout_x, new_y)
+             
+        action = self._move_toward(self.scout_target)
         return action or self._explore_action()
 
 class redAgent(baseAgent):
@@ -312,10 +324,16 @@ class redAgent(baseAgent):
             
         # 4. Scout the Yellow Drop Zone (Z2 East Border)
         scout_x = self.model.z2[2] - 1
-        scout_target = (scout_x, random.randint(0, self.model.grid.height - 1))
         
-        if manhattan(self.pos, scout_target) < 3:
-             return self._explore_action()
+        # Persistent Patrol Logic (same as Yellow)
+        if self.scout_target is None or self.pos == self.scout_target:
+             current_y = self.pos[1]
+             h = self.model.grid.height
+             if current_y > h // 2:
+                 new_y = random.randint(0, h // 3)
+             else:
+                 new_y = random.randint(2 * h // 3, h - 1)
+             self.scout_target = (scout_x, new_y)
              
-        action = self._move_toward(scout_target)
+        action = self._move_toward(self.scout_target)
         return action or self._explore_action()
