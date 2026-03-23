@@ -15,14 +15,16 @@ from config import WASTE_UPGRADE
 
 class Model(Model):
     """A model with some number of agents, number of waste, and a grid cell."""
-    def __init__(self, n_green_agents=1, n_yellow_agents=1, n_red_agents=1, n_waste=1, width=10, height=10, seed=None):
+    def __init__(self, n_green_agents=1, n_yellow_agents=1, n_red_agents=1, n_green_waste=1, n_yellow_waste=0, n_red_waste=0, width=10, height=10, seed=None):
         """Initialize the model.
 
         Args:
             n_green_agents (int, optional): Number of green agents. Defaults to 1.
             n_yellow_agents (int, optional): Number of yellow agents. Defaults to 1.
             n_red_agents (int, optional): Number of red agents. Defaults to 1.
-            n_waste (int, optional): Number of waste items. Defaults to 1.
+            n_green_waste (int, optional): Number of green waste items. Defaults to 1.
+            n_yellow_waste (int, optional): Number of yellow waste items. Defaults to 0.
+            n_red_waste (int, optional): Number of red waste items. Defaults to 0.
             width (int, optional): Grid width. Defaults to 100.
             height (int, optional): Grid height. Defaults to 100.
             seed (int, optional): Random seed. Defaults to None.
@@ -31,10 +33,18 @@ class Model(Model):
         self.num_green_agents = n_green_agents
         self.num_yellow_agents = n_yellow_agents
         self.num_red_agents = n_red_agents
-        self.num_waste = n_waste
+        self.num_green_waste = n_green_waste
+        self.num_yellow_waste = n_yellow_waste
+        self.num_red_waste = n_red_waste
+        
         self.grid = MultiGrid(width, height, torus=False)
         self.robotAgents = []
         self.wasteAgents = []
+        
+        # Metrics tracking
+        self.waste_count_history = []  # [{"step": 0, "green": 1, "yellow": 0, "red": 0, "total": 1}, ...]
+        self.cumulative_distance_history = []  # [{"step": 0, "distance": X}, ...]
+        self.steps = 0
         
         # Define z1, z2, z3 as third area of the grid
         self.z1 = (0, 0, width//3, height)
@@ -60,13 +70,30 @@ class Model(Model):
                 if (x, y) != (width-1, waste_disposal_zone_y):  # Avoid placing a radioactivity agent on the Waste Disposal Zone
                     self.grid.place_agent(radioactivityAgent(self, 3), (x, y))
 
-        # Create waste agents and place them randomly in the area 1
-        for _ in range(self.num_waste):
+        # Create Green waste agents in Z1
+        for _ in range(self.num_green_waste):
             x = self.random.randrange(self.z1[0], self.z1[2])
             y = self.random.randrange(self.z1[1], self.z1[3])
             waste = wasteAgent(self, "green")
             self.wasteAgents.append(waste)
             self.grid.place_agent(waste, (x, y))
+
+        # Create Yellow waste agents in Z2
+        for _ in range(self.num_yellow_waste):
+            x = self.random.randrange(self.z2[0], self.z2[2])
+            y = self.random.randrange(self.z2[1], self.z2[3])
+            waste = wasteAgent(self, "yellow")
+            self.wasteAgents.append(waste)
+            self.grid.place_agent(waste, (x, y))
+
+        # Create Red waste agents in Z3
+        for _ in range(self.num_red_waste):
+            x = self.random.randrange(self.z3[0], self.z3[2])
+            y = self.random.randrange(self.z3[1], self.z3[3])
+            if (x, y) != self.waste_disposal_zone:
+                waste = wasteAgent(self, "red")
+                self.wasteAgents.append(waste)
+                self.grid.place_agent(waste, (x, y))
 
         # Create agents and place them randomly in their area
         for _ in range(self.num_green_agents):
@@ -88,10 +115,60 @@ class Model(Model):
             self.grid.place_agent(red_agent, pos)
         
     def step(self):
+        self.steps += 1
         agent_list = list(self.robotAgents)
         self.random.shuffle(agent_list)
         for agent in agent_list:
             agent.step_agent()
+        
+        # Record metrics at the end of each step
+        self._record_metrics()
+    
+    def _record_metrics(self):
+        """Record waste count and cumulative distance metrics."""
+        # Count wastes by type
+        green_count = sum(1 for w in self.wasteAgents if w.waste_type == "green")
+        yellow_count = sum(1 for w in self.wasteAgents if w.waste_type == "yellow")
+        red_count = sum(1 for w in self.wasteAgents if w.waste_type == "red")
+        
+        # Count wastes in robots' inventories
+        for agent in self.robotAgents:
+            for waste in agent.inventory:
+                if waste.waste_type == "green":
+                    green_count += 1
+                elif waste.waste_type == "yellow":
+                    yellow_count += 1
+                elif waste.waste_type == "red":
+                    red_count += 1
+        
+        total_count = green_count + yellow_count + red_count
+        
+        self.waste_count_history.append({
+            "step": self.steps,
+            "green": green_count,
+            "yellow": yellow_count,
+            "red": red_count,
+            "total": total_count
+        })
+        
+        # Calculate cumulative distance to disposal zone
+        cumulative_distance = 0
+        
+        # Distance of wastes on the map
+        for waste in self.wasteAgents:
+            dist = abs(waste.pos[0] - self.waste_disposal_zone[0]) + abs(waste.pos[1] - self.waste_disposal_zone[1])
+            cumulative_distance += dist
+        
+        # Distance of wastes in robots' inventories (use robot position)
+        for agent in self.robotAgents:
+            for waste in agent.inventory:
+                dist = abs(agent.pos[0] - self.waste_disposal_zone[0]) + abs(agent.pos[1] - self.waste_disposal_zone[1])
+                cumulative_distance += dist
+        
+        self.cumulative_distance_history.append({
+            "step": self.steps,
+            "distance": cumulative_distance
+        })
 
     def is_robot_cell_free(self, pos, moving_agent=None):
         """Return True if no other robot agent is on this cell."""
@@ -183,8 +260,12 @@ class Model(Model):
         """Drop waste if the agent is carrying waste and return the resulting percepts."""
         if agent.inventory:
             waste = agent.inventory.pop()
-            self.grid.place_agent(waste, agent.pos)
-            self.wasteAgents.append(waste)
+            if waste.waste_type == "red" and agent.pos == self.waste_disposal_zone:
+                # Disposed!
+                pass
+            else:
+                self.grid.place_agent(waste, agent.pos)
+                self.wasteAgents.append(waste)
         return self.get_percepts(agent)
 
     def transform(self, agent):
