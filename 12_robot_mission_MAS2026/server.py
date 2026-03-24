@@ -148,6 +148,14 @@ def SpaceGraph(model):
                     linewidths=0.8,
                     zorder=4,
                 )
+                ax.text(
+                    x + dx + 0.08,
+                    y + dy + 0.08,
+                    str(waste.waste_id),
+                    fontsize=6,
+                    color="#111827",
+                    zorder=5,
+                )
 
             if robots:
                 robot = robots[0]
@@ -270,7 +278,7 @@ model_params = {
         "type": "SliderInt",
         "value": 1,
         "label": "Number of green agents:",
-        "min": 0,
+        "min": 1,
         "max": 30,
         "step": 1,
     },
@@ -278,7 +286,7 @@ model_params = {
         "type": "SliderInt",
         "value": 1,
         "label": "Number of yellow agents:",
-        "min": 0,
+        "min": 1,
         "max": 30,
         "step": 1,
     },
@@ -286,8 +294,8 @@ model_params = {
         "type": "SliderInt",
         "value": 1,
         "label": "Number of red agents:",
-        "min": 0,
-        "max": 10,
+        "min": 1,
+        "max": 30,
         "step": 1,
     },
     "n_green_waste": {

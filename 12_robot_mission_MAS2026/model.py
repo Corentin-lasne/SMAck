@@ -48,7 +48,9 @@ class Model(Model):
         self.mailboxes = {}
         self.pending_messages = []
         self.query_counter = 0
+        self.waste_counter = 0
         self.disposed_red_count = 0
+        self.debug = False  # Enable debug logging by setting to True
         
         # Metrics tracking
         self.waste_count_history = []  # [{"step": 0, "green": 1, "yellow": 0, "red": 0, "total": 1}, ...]
@@ -136,6 +138,11 @@ class Model(Model):
         
         # Record metrics at the end of each step
         self._record_metrics()
+
+    def make_waste_id(self):
+        """Return a unique persistent identifier for each waste token."""
+        self.waste_counter += 1
+        return f"w-{self.waste_counter}"
     
     def _record_metrics(self):
         """Record waste count and cumulative distance metrics."""
@@ -253,7 +260,9 @@ class Model(Model):
             "type": message.get("type"),
             "payload": message.get("payload", {}),
         }
-
+        
+        # DEBUG
+        print(f"Agent {sender.unique_id} sends message: {message}")
         direct_target = message.get("to")
         role_target = message.get("to_role")
 
@@ -305,17 +314,30 @@ class Model(Model):
             return False
 
         target_type = getattr(agent, "target_waste_type", None)
+        target_id = None
         task = getattr(agent, "active_task", None)
         if task is not None and not task.get("picked", False):
             task_type = task.get("waste_type")
             if task_type:
                 target_type = task_type
+            target_id = task.get("waste_id")
 
         if target_type is None:
             return False
 
+        if not self._is_pickable_type_for_agent(agent, target_type):
+            return False
+
+        if self._is_lower_waste_for_agent(agent, target_type) and len(agent.inventory) > 0:
+            return False
+
         cell_contents = self.grid.get_cell_list_contents([agent.pos])
-        return any(isinstance(obj, wasteAgent) and obj.waste_type == target_type for obj in cell_contents)
+        return any(
+            isinstance(obj, wasteAgent)
+            and obj.waste_type == target_type
+            and (target_id is None or obj.waste_id == target_id)
+            for obj in cell_contents
+        )
 
     def _can_transform(self, agent):
         """Check whether the agent inventory satisfies transform preconditions."""
@@ -370,15 +392,28 @@ class Model(Model):
     def pick_up(self, agent):
         """Transfer one eligible waste from grid cell to agent inventory."""
         target_type = agent.target_waste_type
+        target_id = None
         task = getattr(agent, "active_task", None)
         if task is not None and not task.get("picked", False):
             task_target = task.get("waste_type")
             if task_target:
                 target_type = task_target
+            target_id = task.get("waste_id")
+
+        if not self._is_pickable_type_for_agent(agent, target_type):
+            return self.get_percepts(agent)
+
+        if self._is_lower_waste_for_agent(agent, target_type) and len(agent.inventory) > 0:
+            return self.get_percepts(agent)
 
         cell_contents = self.grid.get_cell_list_contents([agent.pos])
         for obj in cell_contents:
-            if isinstance(obj, wasteAgent) and len(agent.inventory) < agent.max_capacity and obj.waste_type == target_type:
+            if (
+                isinstance(obj, wasteAgent)
+                and len(agent.inventory) < agent.max_capacity
+                and obj.waste_type == target_type
+                and (target_id is None or obj.waste_id == target_id)
+            ):
                 agent.inventory.append(obj)
                 self.grid.remove_agent(obj)
                 if obj in self.wasteAgents:
@@ -386,12 +421,30 @@ class Model(Model):
                 break
         return self.get_percepts(agent)
 
+    def _is_lower_waste_for_agent(self, agent, waste_type):
+        role = getattr(agent, "agent_role", None)
+        if role == "yellow":
+            return waste_type == "green"
+        if role == "red":
+            return waste_type in {"green", "yellow"}
+        return False
+
+    def _is_pickable_type_for_agent(self, agent, waste_type):
+        role = getattr(agent, "agent_role", None)
+        if role == "green":
+            return waste_type == "green"
+        if role == "yellow":
+            return waste_type in {"green", "yellow"}
+        if role == "red":
+            return waste_type in {"green", "yellow", "red"}
+        return True
+
     def drop(self, agent):
         """Drop one carried waste into the current cell or dispose red waste at disposal zone."""
         if agent.inventory:
             waste = agent.inventory.pop()
-            if waste.waste_type == "red" and agent.pos == self.waste_disposal_zone:
-                # Disposed!
+            if agent.pos == self.waste_disposal_zone:
+                # Any waste delivered to the final depot is removed from simulation.
                 self.disposed_red_count += 1
             else:
                 self.grid.place_agent(waste, agent.pos)

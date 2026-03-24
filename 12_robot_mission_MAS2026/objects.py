@@ -29,6 +29,7 @@ class radioactivityAgent(Agent):
 
 class wasteAgent(Agent):
     """Passive waste token carried, dropped, and transformed by robot agents."""
-    def __init__(self, model, waste_type):
+    def __init__(self, model, waste_type, waste_id=None):
         super().__init__(model)
         self.waste_type = waste_type
+        self.waste_id = waste_id if waste_id is not None else model.make_waste_id()
