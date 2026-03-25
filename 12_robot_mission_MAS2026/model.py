@@ -47,6 +47,11 @@ class Model(Model):
         self.waste_count_history = []  # [{"step": 0, "green": 1, "yellow": 0, "red": 0, "total": 1}, ...]
         self.cumulative_distance_history = []  # [{"step": 0, "distance": X}, ...]
         self.steps = 0
+        self.running = True
+        self.step_green_zero = None
+        self.step_yellow_zero = None
+        self.step_red_zero = None
+        self.step_total_zero = None
         
         # Define z1, z2, z3 as third area of the grid
         self.z1 = (0, 0, width//3, height)
@@ -116,6 +121,12 @@ class Model(Model):
             pos = self.get_random_free_robot_position(self.z3)
             self.grid.place_agent(red_agent, pos)
 
+        # Initialize extinction trackers for already-zero initial conditions.
+        initial_counts = self._compute_waste_counts()
+        self._update_extinction_steps(initial_counts)
+        if initial_counts["total"] == 0:
+            self.running = False
+
     def next_agent_id(self):
         agent_id = self._next_agent_id
         self._next_agent_id += 1
@@ -127,7 +138,8 @@ class Model(Model):
         return waste_id
         
     def step(self):
-        self.steps += 1
+        if not self.running:
+            return
         agent_list = list(self.robotAgents)
         self.random.shuffle(agent_list)
         for agent in agent_list:
@@ -135,15 +147,13 @@ class Model(Model):
         
         # Record metrics at the end of each step
         self._record_metrics()
-    
-    def _record_metrics(self):
-        """Record waste count and cumulative distance metrics."""
-        # Count wastes by type
+
+    def _compute_waste_counts(self):
+        """Compute current counts for each waste type including inventories."""
         green_count = sum(1 for w in self.wasteAgents if w.waste_type == "green")
         yellow_count = sum(1 for w in self.wasteAgents if w.waste_type == "yellow")
         red_count = sum(1 for w in self.wasteAgents if w.waste_type == "red")
-        
-        # Count wastes in robots' inventories
+
         for agent in self.robotAgents:
             for waste in agent.inventory:
                 if waste.waste_type == "green":
@@ -152,8 +162,33 @@ class Model(Model):
                     yellow_count += 1
                 elif waste.waste_type == "red":
                     red_count += 1
-        
-        total_count = green_count + yellow_count + red_count
+
+        return {
+            "green": green_count,
+            "yellow": yellow_count,
+            "red": red_count,
+            "total": green_count + yellow_count + red_count,
+        }
+
+    def _update_extinction_steps(self, counts):
+        """Store the first step where each waste count reaches zero."""
+        if self.step_green_zero is None and counts["green"] == 0:
+            self.step_green_zero = self.steps
+        if self.step_yellow_zero is None and counts["yellow"] == 0:
+            self.step_yellow_zero = self.steps
+        if self.step_red_zero is None and counts["red"] == 0:
+            self.step_red_zero = self.steps
+        if self.step_total_zero is None and counts["total"] == 0:
+            self.step_total_zero = self.steps
+    
+    def _record_metrics(self):
+        """Record waste count and cumulative distance metrics."""
+        counts = self._compute_waste_counts()
+        green_count = counts["green"]
+        yellow_count = counts["yellow"]
+        red_count = counts["red"]
+        total_count = counts["total"]
+        self._update_extinction_steps(counts)
         
         self.waste_count_history.append({
             "step": self.steps,
@@ -181,6 +216,9 @@ class Model(Model):
             "step": self.steps,
             "distance": cumulative_distance
         })
+
+        if total_count == 0:
+            self.running = False
 
     def is_robot_cell_free(self, pos, moving_agent=None):
         """Return True if no other robot agent is on this cell."""
