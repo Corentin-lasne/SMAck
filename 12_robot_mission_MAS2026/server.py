@@ -72,19 +72,28 @@ def _waste_offsets(count):
     return [base[i % len(base)] for i in range(count)]
 
 
-def _consensus_waste_locks(model):
-    """Aggregate lock owner from agents' local memory using majority vote."""
+def _assigned_waste_owners(model):
+    """Return waste_id -> owner_agent_id for actively assigned wastes."""
+    owners = {}
+
+    # Primary source: explicit assignment on each robot.
+    for robot in model.robotAgents:
+        assigned_id = getattr(robot, "assigned_waste_id", None)
+        if assigned_id is not None:
+            owners[assigned_id] = getattr(robot, "agent_id", getattr(robot, "unique_id", None))
+
+    # Backward-compatible fallback if a lock table exists in some branches.
     lock_votes = {}
     for robot in model.robotAgents:
         for waste_id, owner_agent_id in getattr(robot, "waste_locks", {}).items():
-            if waste_id is None or owner_agent_id is None:
+            if waste_id is None or owner_agent_id is None or waste_id in owners:
                 continue
             lock_votes.setdefault(waste_id, []).append(owner_agent_id)
 
-    resolved = {}
-    for waste_id, owners in lock_votes.items():
-        resolved[waste_id] = Counter(owners).most_common(1)[0][0]
-    return resolved
+    for waste_id, owner_list in lock_votes.items():
+        owners[waste_id] = Counter(owner_list).most_common(1)[0][0]
+
+    return owners
 
 
 @solara.component
@@ -101,7 +110,7 @@ def SpaceGraph(model):
     )
     ax = fig.subplots()
     ax.set_facecolor("#f8f9fa")
-    lock_table = _consensus_waste_locks(model)
+    lock_table = _assigned_waste_owners(model)
 
     # Draw zone backgrounds first for immediate spatial context.
     zone_specs = [
@@ -158,7 +167,7 @@ def SpaceGraph(model):
                 lock_owner = lock_table.get(waste.waste_id)
                 waste_label = str(waste.waste_id)
                 if lock_owner is not None:
-                    waste_label = f"{waste.waste_id} [{lock_owner}]"
+                    waste_label = f"{waste.waste_id} [A{lock_owner}]"
                 ax.scatter(
                     [x + dx],
                     [y + dy],
@@ -182,6 +191,8 @@ def SpaceGraph(model):
                 robot = robots[0]
                 role = _robot_role(robot)
                 carried = _carried_waste_type(robot)
+                assigned_waste_id = getattr(robot, "assigned_waste_id", None)
+                agent_id = getattr(robot, "agent_id", robot.unique_id)
                 edge_color = WASTE_COLORS[carried] if carried else "#ffffff"
                 edge_width = 2.6 if carried else 1.2
 
@@ -198,7 +209,7 @@ def SpaceGraph(model):
                 ax.text(
                     x,
                     y - 0.28,
-                    str(getattr(robot, "agent_id", robot.unique_id)),
+                    f"A{agent_id} | W{assigned_waste_id}" if assigned_waste_id is not None else f"A{agent_id}",
                     fontsize=6,
                     color="#111827",
                     ha="center",
@@ -243,6 +254,8 @@ def SpaceGraph(model):
         Line2D([0], [0], marker="o", markersize=7, color="w", markerfacecolor=WASTE_COLORS["yellow"], markeredgecolor="#111827", label="Yellow waste"),
         Line2D([0], [0], marker="o", markersize=7, color="w", markerfacecolor=WASTE_COLORS["red"], markeredgecolor="#111827", label="Red waste"),
         Line2D([0], [0], marker="s", markersize=8, color="w", markerfacecolor="#9ca3af", markeredgecolor=WASTE_COLORS["green"], markeredgewidth=2, label="Carrying waste"),
+        Line2D([0], [0], color="none", label="Waste label: id [Agent_id]"),
+        Line2D([0], [0], color="none", label="Robot label: A<agent_id> | W<assigned_waste_id>"),
     ]
     ax.legend(
         handles=legend_handles,

@@ -45,6 +45,7 @@ class Model(Model):
         self.agent_index_by_id = {}
         self._next_agent_id = 1
         self._next_waste_id = 1
+        self._next_query_id = 1
         
         # Metrics tracking
         self.waste_count_history = []  # [{"step": 0, "green": 1, "yellow": 0, "red": 0, "total": 1}, ...]
@@ -148,6 +149,11 @@ class Model(Model):
         waste_id = self._next_waste_id
         self._next_waste_id += 1
         return waste_id
+
+    def next_query_id(self):
+        query_id = self._next_query_id
+        self._next_query_id += 1
+        return query_id
         
     def step(self):
         if not self.running:
@@ -420,29 +426,36 @@ class Model(Model):
         )
 
     def send_agent_message(self, agent):
-        pending = getattr(agent, "pending_message", None)
-        if pending is None:
+        pending_batch = list(getattr(agent, "pending_messages", []) or [])
+        pending_single = getattr(agent, "pending_message", None)
+        if pending_single is not None:
+            pending_batch.append(pending_single)
+
+        if not pending_batch:
             return self.get_percepts(agent)
 
-        mode = pending.get("mode")
-        performative = pending.get("performative")
-        content = pending.get("content", {})
+        for pending in pending_batch:
+            mode = pending.get("mode")
+            performative = pending.get("performative")
+            content = pending.get("content", {})
 
-        if mode == "direct":
-            recipient_id = pending.get("recipient_id")
-            if recipient_id is not None:
-                self.send_message(agent.agent_id, recipient_id, performative, content)
-        elif mode == "broadcast_color":
-            color = pending.get("color")
-            inventory_state = pending.get("inventory_state")
-            if color is not None:
-                self.broadcast_to_color(
-                    sender_id=agent.agent_id,
-                    color=color,
-                    performative=performative,
-                    content=content,
-                    inventory_state=inventory_state,
-                )
+            if mode == "direct":
+                recipient_id = pending.get("recipient_id")
+                if recipient_id is not None:
+                    self.send_message(agent.agent_id, recipient_id, performative, content)
+            elif mode == "broadcast_color":
+                color = pending.get("color")
+                inventory_state = pending.get("inventory_state")
+                if color is not None:
+                    self.broadcast_to_color(
+                        sender_id=agent.agent_id,
+                        color=color,
+                        performative=performative,
+                        content=content,
+                        inventory_state=inventory_state,
+                    )
 
+        if hasattr(agent, "pending_messages") and agent.pending_messages is not None:
+            agent.pending_messages.clear()
         agent.pending_message = None
         return self.get_percepts(agent)
