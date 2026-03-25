@@ -40,6 +40,8 @@ class Model(Model):
         self.grid = MultiGrid(width, height, torus=False)
         self.robotAgents = []
         self.wasteAgents = []
+        self._next_agent_id = 1
+        self._next_waste_id = 1
         
         # Metrics tracking
         self.waste_count_history = []  # [{"step": 0, "green": 1, "yellow": 0, "red": 0, "total": 1}, ...]
@@ -74,7 +76,7 @@ class Model(Model):
         for _ in range(self.num_green_waste):
             x = self.random.randrange(self.z1[0], self.z1[2])
             y = self.random.randrange(self.z1[1], self.z1[3])
-            waste = wasteAgent(self, "green")
+            waste = wasteAgent(self, "green", waste_id=self.next_waste_id())
             self.wasteAgents.append(waste)
             self.grid.place_agent(waste, (x, y))
 
@@ -82,7 +84,7 @@ class Model(Model):
         for _ in range(self.num_yellow_waste):
             x = self.random.randrange(self.z2[0], self.z2[2])
             y = self.random.randrange(self.z2[1], self.z2[3])
-            waste = wasteAgent(self, "yellow")
+            waste = wasteAgent(self, "yellow", waste_id=self.next_waste_id())
             self.wasteAgents.append(waste)
             self.grid.place_agent(waste, (x, y))
 
@@ -91,28 +93,38 @@ class Model(Model):
             x = self.random.randrange(self.z3[0], self.z3[2])
             y = self.random.randrange(self.z3[1], self.z3[3])
             if (x, y) != self.waste_disposal_zone:
-                waste = wasteAgent(self, "red")
+                waste = wasteAgent(self, "red", waste_id=self.next_waste_id())
                 self.wasteAgents.append(waste)
                 self.grid.place_agent(waste, (x, y))
 
         # Create agents and place them randomly in their area
         for _ in range(self.num_green_agents):
-            green_agent = greenAgent(self)
+            green_agent = greenAgent(self, agent_id=self.next_agent_id())
             self.robotAgents.append(green_agent)
             pos = self.get_random_free_robot_position(self.z1)
             self.grid.place_agent(green_agent, pos)
             
         for _ in range(self.num_yellow_agents):
-            yellow_agent = yellowAgent(self)
+            yellow_agent = yellowAgent(self, agent_id=self.next_agent_id())
             self.robotAgents.append(yellow_agent)
             pos = self.get_random_free_robot_position(self.z2)
             self.grid.place_agent(yellow_agent, pos)
             
         for _ in range(self.num_red_agents):
-            red_agent = redAgent(self)
+            red_agent = redAgent(self, agent_id=self.next_agent_id())
             self.robotAgents.append(red_agent)
             pos = self.get_random_free_robot_position(self.z3)
             self.grid.place_agent(red_agent, pos)
+
+    def next_agent_id(self):
+        agent_id = self._next_agent_id
+        self._next_agent_id += 1
+        return agent_id
+
+    def next_waste_id(self):
+        waste_id = self._next_waste_id
+        self._next_waste_id += 1
+        return waste_id
         
     def step(self):
         self.steps += 1
@@ -192,6 +204,9 @@ class Model(Model):
 
     def do(self, agent, action):
         """Execute the given action for the specified agent and returns the resulting percepts."""
+        if action is None:
+            # No feasible action this turn (blocked or no valid policy branch).
+            return self.get_percepts(agent)
         if action.startswith("move"):
             direction = action.split("_")[1]
             return self.move_agent(agent, direction)
@@ -248,7 +263,7 @@ class Model(Model):
         """Pick up waste if the agent is on a cell with waste and return the resulting percepts."""
         cell_contents = self.grid.get_cell_list_contents([agent.pos])
         for obj in cell_contents:
-            if isinstance(obj, wasteAgent) and len(agent.inventory) < agent.max_capacity and obj.waste_type == agent.target_waste_type :
+            if isinstance(obj, wasteAgent) and agent.can_add_waste_type(obj.waste_type):
                 agent.inventory.append(obj)
                 self.grid.remove_agent(obj)
                 if obj in self.wasteAgents:
@@ -260,7 +275,7 @@ class Model(Model):
         """Drop waste if the agent is carrying waste and return the resulting percepts."""
         if agent.inventory:
             waste = agent.inventory.pop()
-            if waste.waste_type == "red" and agent.pos == self.waste_disposal_zone:
+            if agent.pos == self.waste_disposal_zone:
                 # Disposed!
                 pass
             else:
@@ -284,7 +299,7 @@ class Model(Model):
             agent.inventory = []
  
         # Produce 1 result waste and place directly in inventory
-        new_waste = wasteAgent(self, result)
+        new_waste = wasteAgent(self, result, waste_id=self.next_waste_id())
         agent.inventory.append(new_waste)
  
         return self.get_percepts(agent)

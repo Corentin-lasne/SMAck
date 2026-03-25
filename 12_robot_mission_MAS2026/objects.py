@@ -33,6 +33,7 @@ class wasteAgent(Agent):
     """ An agent that represents a waste. 
     It has no behaviour.
     """
-    def __init__(self, model, waste_type):
+    def __init__(self, model, waste_type, waste_id=None):
         super().__init__(model)
         self.waste_type = waste_type
+        self.waste_id = waste_id
