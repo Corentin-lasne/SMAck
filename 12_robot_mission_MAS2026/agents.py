@@ -32,10 +32,13 @@ class baseAgent(Agent):
     allowed_zones = []
     max_capacity = 2
 
-    def __init__(self, model):
+    def __init__(self, model, agent_id=None):
         super().__init__(model)
+        self.agent_id = agent_id
         self.percepts = {}
         self.inventory = []
+        self.carry_steps = 0
+        self.direct_handoff_mode = False
 
         self.known_map = {}
         self.waste_map = {}
@@ -49,9 +52,71 @@ class baseAgent(Agent):
     def step_agent(self):
         self.percepts = self.model.get_percepts(self)
         self.update(self.percepts)
+        if self.inventory:
+            self.carry_steps += 1
+        else:
+            self.carry_steps = 0
+            self.direct_handoff_mode = False
         action = self.deliberate()
         new_percepts = self.model.do(self, action)
         self.update(new_percepts)
+
+    def _carry_step_limit(self):
+        """Return carry timeout in number of steps, based on grid size."""
+        return (self.model.grid.width + self.model.grid.height)/2
+
+    def can_pick_waste_type(self, waste_type):
+        """Return True when this agent can pick the given waste type."""
+        return waste_type == self.target_waste_type
+
+    def can_add_waste_type(self, waste_type):
+        """Apply carrying constraints before allowing a pickup."""
+        if not self.can_pick_waste_type(waste_type):
+            return False
+        if len(self.inventory) >= self.max_capacity:
+            return False
+        if not self.inventory:
+            return True
+
+        # If carrying a non-native waste, this must remain the only carried item.
+        if any(w.waste_type != self.target_waste_type for w in self.inventory):
+            return False
+
+        # Non-native waste can only be carried alone.
+        if waste_type != self.target_waste_type:
+            return False
+
+        return True
+
+    def _eastern_border_x(self):
+        """Return the easternmost x-column allowed for this agent."""
+        zone_bounds = {
+            "z1": self.model.z1,
+            "z2": self.model.z2,
+            "z3": self.model.z3,
+        }
+        right_cols = [zone_bounds[z][2] - 1 for z in self.allowed_zones if z in zone_bounds]
+        return max(right_cols)
+
+    def _timeout_drop_action(self):
+        """If carrying for too long, force move to eastern border then drop."""
+        if not self.inventory:
+            return None
+        if self.carry_steps < self._carry_step_limit():
+            return None
+
+        target_x = self._eastern_border_x()
+        if self.pos[0] == target_x:
+            return "drop"
+        action = self._move_toward((target_x, self.pos[1]))
+        return action or self._explore_action()
+
+    def _known_targets_on_frontier(self, waste_type, frontier_x):
+        """Return known positions of given waste type located on frontier column."""
+        return [
+            p for p, wt in self.waste_map.items()
+            if wt == waste_type and p[0] == frontier_x and self.model.is_position_allowed(self, p)
+        ]
 
     def update(self, percepts):
         surrounding = percepts.get("surrounding", {})
@@ -189,34 +254,52 @@ class greenAgent(baseAgent):
     result_waste_type = "yellow"
     max_capacity = 2
 
+    def can_add_waste_type(self, waste_type):
+        if waste_type != "green":
+            return False
+        if len(self.inventory) >= self.max_capacity:
+            return False
+
+        border_x = self.model.z1[2] - 1
+        # Green agent cannot pick a green at Z1/Z2 frontier when empty.
+        if self.pos[0] == border_x and len(self.inventory) == 0:
+            return False
+        return True
+
     def deliberate(self):
         inv_types = [w.waste_type for w in self.inventory]
+
+        timeout_action = self._timeout_drop_action()
+        if timeout_action:
+            return timeout_action
+
+        # Green direct handoff is only for transformed yellow.
+        if "yellow" in inv_types:
+            self.direct_handoff_mode = True
+            target_x = self.model.z1[2] - 1
+            if self.pos[0] == target_x:
+                return "drop"
+            action = self._move_toward((target_x, self.pos[1]))
+            return action or self._explore_action()
+        self.direct_handoff_mode = False
         
         # 1. Transform if full of green
         if inv_types.count("green") >= 2:
             return "transform"
 
-        # 2. Deliver yellow waste to border of Z1
-        if "yellow" in inv_types:
-            # Target is the easternmost column of Z1
-            target_x = self.model.z1[2] - 1
-            if self.pos[0] == target_x:
-                return "drop"
-            
-            # Move to any cell in that column
-            target = (target_x, self.pos[1])
-            action = self._move_toward(target)
-            return action or self._explore_action()
-
         # 3. Pick up green waste if here
         current_contents = self.percepts.get("surrounding", {}).get(self.pos, [])
-        if any(isinstance(o, wasteAgent) and o.waste_type == "green" for o in current_contents):
-            if len(self.inventory) < self.max_capacity:
-                return "pick_up"
+        if any(isinstance(o, wasteAgent) and self.can_add_waste_type(o.waste_type) for o in current_contents):
+            return "pick_up"
 
         # 4. Move to known green waste
-        green_targets = [p for p, wt in self.waste_map.items() 
-                         if wt == "green" and self.model.is_position_allowed(self, p)]
+        border_x = self.model.z1[2] - 1
+        green_targets = [
+            p for p, wt in self.waste_map.items()
+            if wt == "green"
+            and self.model.is_position_allowed(self, p)
+            and not (p[0] == border_x and len(self.inventory) == 0)
+        ]
         if green_targets:
             closest = min(green_targets, key=lambda p: manhattan(self.pos, p))
             if closest == self.pos:
@@ -232,9 +315,72 @@ class yellowAgent(baseAgent):
     result_waste_type = "red"
     allowed_zones = ["z1", "z2"]
     max_capacity = 2
+
+    def can_add_waste_type(self, waste_type):
+        if len(self.inventory) >= self.max_capacity:
+            return False
+
+        left_border_x = self.model.z1[2] - 1
+        right_border_x = self.model.z2[2] - 1
+        inv_types = [w.waste_type for w in self.inventory]
+
+        if waste_type == "green":
+            # Yellow can carry green only from Z1/Z2 frontier, and only with empty inventory.
+            return self.pos[0] == left_border_x and len(self.inventory) == 0
+
+        if waste_type == "yellow":
+            # If carrying green, yellow must remain the only item.
+            if "green" in inv_types:
+                return False
+            # At Z2/Z3 frontier, yellow can be picked only if already carrying yellow.
+            if self.pos[0] == right_border_x and "yellow" not in inv_types:
+                return False
+            return True
+
+        # Yellow agent never picks red from the floor.
+        return False
  
     def deliberate(self):
         inv_types = [w.waste_type for w in self.inventory]
+        
+        timeout_action = self._timeout_drop_action()
+        if timeout_action:
+            return timeout_action
+
+        frontier_x = self.model.z1[2] - 1
+        current_contents = self.percepts.get("surrounding", {}).get(self.pos, [])
+
+        # Priority pickup on incoming frontier (handoff area).
+        if self.pos[0] == frontier_x:
+            if any(
+                isinstance(o, wasteAgent) and self.can_add_waste_type(o.waste_type)
+                for o in current_contents
+            ):
+                if len(self.inventory) == 0:
+                    self.direct_handoff_mode = True
+                    return "pick_up"
+
+        # If a frontier waste is known, go to it before normal exploration.
+        if not self.inventory:
+            frontier_targets = (
+                self._known_targets_on_frontier("green", frontier_x)
+                + self._known_targets_on_frontier("yellow", frontier_x)
+            )
+            if frontier_targets:
+                closest = min(frontier_targets, key=lambda p: manhattan(self.pos, p))
+                action = self._move_toward(closest)
+                if action:
+                    return action
+
+        # Yellow uses direct handoff only when carrying green: deliver to Z2 east border.
+        if any(w == "green" for w in inv_types):
+            self.direct_handoff_mode = True
+            target_x = self.model.z2[2] - 1
+            if self.pos[0] == target_x:
+                return "drop"
+            action = self._move_toward((target_x, self.pos[1]))
+            return action or self._explore_action()
+        self.direct_handoff_mode = False
  
         # 1. Transform if full of yellow
         if inv_types.count("yellow") >= 2:
@@ -250,15 +396,24 @@ class yellowAgent(baseAgent):
             action = self._move_toward(target)
             return action or self._explore_action()
  
-        # 3. Pick up yellow waste if here
+        # 3. Pick up yellow/green waste under yellow constraints
         current_contents = self.percepts.get("surrounding", {}).get(self.pos, [])
-        if any(isinstance(o, wasteAgent) and o.waste_type == "yellow" for o in current_contents):
-            if len(self.inventory) < self.max_capacity:
-                return "pick_up"
+        if any(
+            isinstance(o, wasteAgent) and self.can_add_waste_type(o.waste_type)
+            for o in current_contents
+        ):
+            return "pick_up"
  
-        # 4. Move to known yellow waste
-        yellow_targets = [p for p, wt in self.waste_map.items()
-                          if wt == "yellow" and self.model.is_position_allowed(self, p)]
+        # 4. Move to known reachable yellow/green waste
+        right_border_x = self.model.z2[2] - 1
+        yellow_targets = [
+            p for p, wt in self.waste_map.items()
+            if (
+                (wt == "green" and p[0] == frontier_x and len(self.inventory) == 0)
+                or (wt == "yellow" and not (p[0] == right_border_x and "yellow" not in inv_types))
+            )
+            and self.model.is_position_allowed(self, p)
+        ]
         if yellow_targets:
             closest = min(yellow_targets, key=lambda p: manhattan(self.pos, p))
             if closest == self.pos:
@@ -297,27 +452,77 @@ class redAgent(baseAgent):
     result_waste_type = None
     allowed_zones = ["z1", "z2", "z3"]
     max_capacity = 1
+
+    def can_pick_waste_type(self, waste_type):
+        return waste_type in {"green", "yellow", "red"}
+
+    def can_add_waste_type(self, waste_type):
+        if len(self.inventory) >= self.max_capacity:
+            return False
+
+        right_border_x = self.model.z2[2] - 1
+        if waste_type in {"green", "yellow"}:
+            # Red can pick green/yellow only on Z2/Z3 frontier.
+            return self.pos[0] == right_border_x
+        if waste_type == "red":
+            return True
+        return False
  
     def deliberate(self):
         inv_types = [w.waste_type for w in self.inventory]
- 
-        # 1. Deliver red waste to Disposal Zone
-        if "red" in inv_types:
+
+        # Red direct-handoff mode is mandatory for any carried waste.
+        if self.inventory:
+            self.direct_handoff_mode = True
             target = self.model.waste_disposal_zone
             if self.pos == target:
                 return "drop"
             action = self._move_toward(target)
             return action or self._explore_action()
+        self.direct_handoff_mode = False
+
+        frontier_x = self.model.z2[2] - 1
+        current_contents = self.percepts.get("surrounding", {}).get(self.pos, [])
+        
+        # Priority pickup on incoming frontier, then direct transport to disposal.
+        if self.pos[0] == frontier_x:
+            if any(
+                isinstance(o, wasteAgent) and self.can_add_waste_type(o.waste_type)
+                for o in current_contents
+            ):
+                if len(self.inventory) == 0 :
+                    self.direct_handoff_mode = True
+                    return "pick_up"
+
+        if not self.inventory:
+            frontier_targets = (
+                self._known_targets_on_frontier("red", frontier_x)
+                + self._known_targets_on_frontier("yellow", frontier_x)
+                + self._known_targets_on_frontier("green", frontier_x)
+            )
+            if frontier_targets:
+                closest = min(frontier_targets, key=lambda p: manhattan(self.pos, p))
+                action = self._move_toward(closest)
+                if action:
+                    return action
  
         # 2. Pick up red waste if here
         current_contents = self.percepts.get("surrounding", {}).get(self.pos, [])
-        if any(isinstance(o, wasteAgent) and o.waste_type == "red" for o in current_contents):
-            if len(self.inventory) < self.max_capacity:
-                return "pick_up"
+        if any(
+            isinstance(o, wasteAgent) and self.can_add_waste_type(o.waste_type)
+            for o in current_contents
+        ):
+            return "pick_up"
         
-        # 3. Move to known red waste
-        red_targets = [p for p, wt in self.waste_map.items()
-                       if wt == "red" and self.model.is_position_allowed(self, p)]
+        # 3. Move to known reachable waste (red anywhere, green/yellow on Z2/Z3 frontier only)
+        red_targets = [
+            p for p, wt in self.waste_map.items()
+            if (
+                wt == "red"
+                or (wt in {"green", "yellow"} and p[0] == frontier_x)
+            )
+            and self.model.is_position_allowed(self, p)
+        ]
         if red_targets:
             closest = min(red_targets, key=lambda p: manhattan(self.pos, p))
             if closest == self.pos:

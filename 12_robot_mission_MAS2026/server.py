@@ -10,81 +10,256 @@ Date of creation : 16/03/2026
 import mesa
 import solara
 from matplotlib.figure import Figure
-from mesa.visualization import SolaraViz, make_plot_component, make_space_component
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch, Rectangle
+from mesa.visualization import SolaraViz
 from mesa.visualization.utils import update_counter
+from collections import Counter
 from agents import greenAgent, yellowAgent, redAgent
-from objects import radioactivityAgent, wasteAgent
-# Import the local MoneyModel.py
+from objects import wasteAgent
 from model import Model
 
+ZONE_COLORS = {
+    "z1": "#d9f7be",  # green-tinted
+    "z2": "#fff1b8",  # amber-tinted
+    "z3": "#ffd6d6",  # red-tinted
+}
 
-def robotAgent_portrayal(robotAgent):
-    color = "tab:blue"
-    if isinstance(robotAgent, greenAgent):
-        color = "tab:green"
-    elif isinstance(robotAgent, yellowAgent):
-        color = "tab:orange"
-    elif isinstance(robotAgent, redAgent):
-        color = "tab:red"
+ROBOT_COLORS = {
+    "green": "#2f9e44",
+    "yellow": "#f08c00",
+    "red": "#c92a2a",
+}
 
-    return {
-        "size": 800,
-        "color": color,
-        "marker": "s",
-        "zorder": 2,
-    }
+WASTE_COLORS = {
+    "green": "#1b5e20",
+    "yellow": "#f59f00",
+    "red": "#a61e4d",
+}
 
-def wasteAgent_portrayal(wasteAgent):
-    if wasteAgent.waste_type == "green":
-        color = "#096C0F"
-    elif wasteAgent.waste_type == "yellow":
-        color = "#B8AC06"
-    elif wasteAgent.waste_type == "red":
-        color = "#A80303"
-    return {
-        "size": 600,
-        "color": color,
-        "marker": "o",
-        "zorder": 1,
-    }
 
-def radioactivityAgent_portrayal(radioactivityAgent):
-    """Portrayal for radioactivity agents based on their level."""
-    # Color based on radioactivity level
-    if radioactivityAgent.radioactivity < 0.33:
-        color = "lightgreen"
-    elif radioactivityAgent.radioactivity < 0.66:
-        color = "lightyellow"
-    elif radioactivityAgent.radioactivity < 1:
-        color = "lightcoral"
-    else:  # Waste Disposal Zone
-        color = "purple"
-    
-    marker = "s"
-    if radioactivityAgent.radioactivity == 4:
-        marker = "^" 
-    
-    return {
-        "marker": marker,
-        "size": 1000,
-        "color": color,
-        "zorder": 0
-    }
+def _robot_role(robot):
+    """Return the role key used by color maps."""
+    if isinstance(robot, greenAgent):
+        return "green"
+    if isinstance(robot, yellowAgent):
+        return "yellow"
+    return "red"
 
-def agent_portrayal(agent):
-    """General portrayal function that handles all agent types."""
-    if isinstance(agent, radioactivityAgent):
-        return radioactivityAgent_portrayal(agent)
-    elif isinstance(agent, wasteAgent):
-        return wasteAgent_portrayal(agent)
-    elif isinstance(agent, (greenAgent, yellowAgent, redAgent)):
-        return robotAgent_portrayal(agent)
-    return {"size": 1, "color": "gray"}
+
+def _carried_waste_type(robot):
+    """Return the first carried waste type, or `None` when inventory is empty."""
+    if not getattr(robot, "inventory", None):
+        return None
+    return robot.inventory[0].waste_type
+
+
+def _waste_offsets(count):
+    """Return deterministic marker offsets to keep multiple wastes readable in one cell."""
+    base = [
+        (0.0, 0.0),
+        (-0.18, 0.18),
+        (0.18, 0.18),
+        (-0.18, -0.18),
+        (0.18, -0.18),
+        (0.0, 0.24),
+        (0.0, -0.24),
+        (-0.24, 0.0),
+        (0.24, 0.0),
+    ]
+    if count <= len(base):
+        return base[:count]
+    return [base[i % len(base)] for i in range(count)]
+
+
+def _consensus_waste_locks(model):
+    """Aggregate lock owner from agents' local memory using majority vote."""
+    lock_votes = {}
+    for robot in model.robotAgents:
+        for waste_id, owner_agent_id in getattr(robot, "waste_locks", {}).items():
+            if waste_id is None or owner_agent_id is None:
+                continue
+            lock_votes.setdefault(waste_id, []).append(owner_agent_id)
+
+    resolved = {}
+    for waste_id, owners in lock_votes.items():
+        resolved[waste_id] = Counter(owners).most_common(1)[0][0]
+    return resolved
+
+
+@solara.component
+def SpaceGraph(model):
+    """Render the grid with clear zone background, cell borders, and readable overlays."""
+    update_counter.get()
+    width, height = model.grid.width, model.grid.height
+
+    fig = Figure(
+        figsize=(
+            max(8, min(16, width * 0.38)),
+            max(6, min(14, height * 0.38)),
+        )
+    )
+    ax = fig.subplots()
+    ax.set_facecolor("#f8f9fa")
+    lock_table = _consensus_waste_locks(model)
+
+    # Draw zone backgrounds first for immediate spatial context.
+    zone_specs = [
+        (model.z1, ZONE_COLORS["z1"]),
+        (model.z2, ZONE_COLORS["z2"]),
+        (model.z3, ZONE_COLORS["z3"]),
+    ]
+    for (x_min, y_min, x_max, y_max), zone_color in zone_specs:
+        ax.add_patch(
+            Rectangle(
+                (x_min - 0.5, y_min - 0.5),
+                x_max - x_min,
+                y_max - y_min,
+                facecolor=zone_color,
+                edgecolor="none",
+                alpha=0.9,
+                zorder=0,
+            )
+        )
+
+    # Highlight disposal position as a stable landmark.
+    disp_x, disp_y = model.waste_disposal_zone
+    ax.add_patch(
+        Rectangle(
+            (disp_x - 0.5, disp_y - 0.5),
+            1,
+            1,
+            facecolor="none",
+            edgecolor="#111827",
+            linewidth=2.2,
+            zorder=2,
+        )
+    )
+    ax.scatter(
+        [disp_x],
+        [disp_y],
+        marker="X",
+        s=180,
+        c="#111827",
+        edgecolors="white",
+        linewidths=1.0,
+        zorder=3,
+    )
+
+    # Render wastes first, then robots on top.
+    for x in range(width):
+        for y in range(height):
+            cell_contents = model.grid.get_cell_list_contents([(x, y)])
+            wastes = [obj for obj in cell_contents if isinstance(obj, wasteAgent)]
+            robots = [obj for obj in cell_contents if isinstance(obj, (greenAgent, yellowAgent, redAgent))]
+
+            offsets = _waste_offsets(len(wastes))
+            for waste, (dx, dy) in zip(wastes, offsets):
+                lock_owner = lock_table.get(waste.waste_id)
+                waste_label = str(waste.waste_id)
+                if lock_owner is not None:
+                    waste_label = f"{waste.waste_id} [{lock_owner}]"
+                ax.scatter(
+                    [x + dx],
+                    [y + dy],
+                    marker="o",
+                    s=80,
+                    c=WASTE_COLORS[waste.waste_type],
+                    edgecolors="#111827",
+                    linewidths=0.8,
+                    zorder=4,
+                )
+                ax.text(
+                    x + dx + 0.08,
+                    y + dy + 0.08,
+                    waste_label,
+                    fontsize=6,
+                    color="#111827",
+                    zorder=5,
+                )
+
+            if robots:
+                robot = robots[0]
+                role = _robot_role(robot)
+                carried = _carried_waste_type(robot)
+                edge_color = WASTE_COLORS[carried] if carried else "#ffffff"
+                edge_width = 2.6 if carried else 1.2
+
+                ax.scatter(
+                    [x],
+                    [y],
+                    marker="s",
+                    s=260,
+                    c=ROBOT_COLORS[role],
+                    edgecolors=edge_color,
+                    linewidths=edge_width,
+                    zorder=6,
+                )
+                ax.text(
+                    x,
+                    y - 0.28,
+                    str(getattr(robot, "agent_id", robot.unique_id)),
+                    fontsize=6,
+                    color="#111827",
+                    ha="center",
+                    va="top",
+                    zorder=7,
+                )
+
+                # Badge shows carried waste type at a glance.
+                if carried:
+                    ax.scatter(
+                        [x + 0.22],
+                        [y + 0.22],
+                        marker="o",
+                        s=55,
+                        c=WASTE_COLORS[carried],
+                        edgecolors="#111827",
+                        linewidths=0.8,
+                        zorder=7,
+                    )
+
+    ax.set_xlim(-0.5, width - 0.5)
+    ax.set_ylim(-0.5, height - 0.5)
+    ax.set_aspect("equal")
+
+    # Visible cell borders for readability.
+    ax.set_xticks([i - 0.5 for i in range(width + 1)], minor=True)
+    ax.set_yticks([i - 0.5 for i in range(height + 1)], minor=True)
+    ax.grid(which="minor", color="#475569", alpha=0.45, linewidth=0.45)
+
+    ax.set_xticks(range(0, width, max(1, width // 10)))
+    ax.set_yticks(range(0, height, max(1, height // 10)))
+    ax.tick_params(axis="both", labelsize=8, colors="#111827")
+
+    legend_handles = [
+        Patch(facecolor=ZONE_COLORS["z1"], edgecolor="none", label="Zone 1"),
+        Patch(facecolor=ZONE_COLORS["z2"], edgecolor="none", label="Zone 2"),
+        Patch(facecolor=ZONE_COLORS["z3"], edgecolor="none", label="Zone 3"),
+        Line2D([0], [0], marker="s", markersize=8, color="w", markerfacecolor=ROBOT_COLORS["green"], label="Green agent"),
+        Line2D([0], [0], marker="s", markersize=8, color="w", markerfacecolor=ROBOT_COLORS["yellow"], label="Yellow agent"),
+        Line2D([0], [0], marker="s", markersize=8, color="w", markerfacecolor=ROBOT_COLORS["red"], label="Red agent"),
+        Line2D([0], [0], marker="o", markersize=7, color="w", markerfacecolor=WASTE_COLORS["green"], markeredgecolor="#111827", label="Green waste"),
+        Line2D([0], [0], marker="o", markersize=7, color="w", markerfacecolor=WASTE_COLORS["yellow"], markeredgecolor="#111827", label="Yellow waste"),
+        Line2D([0], [0], marker="o", markersize=7, color="w", markerfacecolor=WASTE_COLORS["red"], markeredgecolor="#111827", label="Red waste"),
+        Line2D([0], [0], marker="s", markersize=8, color="w", markerfacecolor="#9ca3af", markeredgecolor=WASTE_COLORS["green"], markeredgewidth=2, label="Carrying waste"),
+    ]
+    ax.legend(
+        handles=legend_handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.12),
+        ncol=5,
+        fontsize=7,
+        frameon=True,
+    )
+
+    ax.set_title("Grid State", fontsize=11, color="#111827")
+    solara.FigureMatplotlib(fig)
 
 @solara.component
 def WasteCountPlot(model):
-    """Plot showing the evolution of waste counts over time."""
-    update_counter.get()  # This is required to update the counter
+    """Plot the number of wastes by type and in total over time."""
+    update_counter.get()
     fig = Figure(figsize=(10, 5))
     ax = fig.subplots()
     
@@ -110,8 +285,8 @@ def WasteCountPlot(model):
 
 @solara.component
 def CumulativeDistancePlot(model):
-    """Plot showing the cumulative distance of all waste to the disposal zone."""
-    update_counter.get()  # This is required to update the counter
+    """Plot cumulative Manhattan distance from all wastes to disposal."""
+    update_counter.get()
     fig = Figure(figsize=(10, 5))
     ax = fig.subplots()
     
@@ -119,7 +294,7 @@ def CumulativeDistancePlot(model):
         steps = [record["step"] for record in model.cumulative_distance_history]
         distances = [record["distance"] for record in model.cumulative_distance_history]
         
-        ax.plot(steps, distances, label="Cumulative Distance", color="purple", linewidth=2)
+        ax.plot(steps, distances, label="Cumulative Distance", color="#5f3dc4", linewidth=2)
         
         ax.set_xlabel("Step")
         ax.set_ylabel("Cumulative Distance (Manhattan)")
@@ -134,7 +309,7 @@ model_params = {
         "type": "SliderInt",
         "value": 1,
         "label": "Number of green agents:",
-        "min": 0,
+        "min": 1,
         "max": 30,
         "step": 1,
     },
@@ -142,7 +317,7 @@ model_params = {
         "type": "SliderInt",
         "value": 1,
         "label": "Number of yellow agents:",
-        "min": 0,
+        "min": 1,
         "max": 30,
         "step": 1,
     },
@@ -150,8 +325,8 @@ model_params = {
         "type": "SliderInt",
         "value": 1,
         "label": "Number of red agents:",
-        "min": 0,
-        "max": 10,
+        "min": 1,
+        "max": 30,
         "step": 1,
     },
     "n_green_waste": {
@@ -196,12 +371,10 @@ model_params = {
     }
 }
 
-# Create initial model instance
+# Create initial model instance used by SolaraViz.
 model = Model(n_green_agents=1, n_yellow_agents=1, n_red_agents=1, n_green_waste=10, n_yellow_waste=0, n_red_waste=0, width=30, height=30)
 
-SpaceGraph = make_space_component(agent_portrayal)
-
-#Create the Dashboard
+# Build dashboard components around model controls and live plots.
 page = SolaraViz(
     model,
     components=[SpaceGraph, WasteCountPlot, CumulativeDistancePlot],
