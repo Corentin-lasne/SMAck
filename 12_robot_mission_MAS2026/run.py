@@ -1,4 +1,4 @@
-"""Batch simulation runner based on Mesa's batch_run."""
+"""Batch simulation runner for the robot mission model."""
 
 from __future__ import annotations
 
@@ -17,6 +17,66 @@ from tqdm import tqdm
 from model import Model
 
 
+def _plot_waste_composition(timeseries_df: pd.DataFrame, out_dir: Path) -> None:
+    """Plot waste count over time for all types (green, yellow, red, total)."""
+    if timeseries_df.empty:
+        return
+
+    metrics = ["green", "yellow", "red", "total"]
+    for metric in metrics:
+        if metric not in timeseries_df.columns:
+            return
+
+    # Group by config and step, compute mean and quantiles for each metric
+    grouped_data = []
+    for metric in metrics:
+        grouped = (
+            timeseries_df.groupby(["config", "Step"])[metric]
+            .agg(
+                mean="mean",
+                q025=lambda s: s.quantile(0.025),
+                q975=lambda s: s.quantile(0.975),
+            )
+            .reset_index()
+        )
+        grouped["metric"] = metric
+        grouped_data.append(grouped)
+
+    all_grouped = pd.concat(grouped_data, ignore_index=True)
+
+    plt.figure(figsize=(12, 6))
+    ax = plt.gca()
+
+    # Color mapping for metrics
+    colors = {"green": "green", "yellow": "gold", "red": "red", "total": "black"}
+
+    for config in all_grouped["config"].unique():
+        cfg_data = all_grouped[all_grouped["config"] == config]
+
+        for metric in metrics:
+            metric_data = cfg_data[cfg_data["metric"] == metric].sort_values("Step")
+            if metric_data.empty:
+                continue
+
+            x = metric_data["Step"].to_numpy()
+            y = metric_data["mean"].to_numpy()
+            y_low = metric_data["q025"].to_numpy()
+            y_high = metric_data["q975"].to_numpy()
+
+            # Use dashed line for total to distinguish it
+            linestyle = "--" if metric == "total" else "-"
+            line = ax.plot(x, y, label=f"{config} - {metric}", color=colors[metric], linestyle=linestyle)[0]
+            ax.fill_between(x, y_low, y_high, alpha=0.15, color=line.get_color())
+
+    ax.set_title("Total waste over time (mean with 95% interval) by type")
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Waste count")
+    ax.legend(fontsize=8, loc="best")
+    plt.tight_layout()
+    plt.savefig(out_dir / "total_waste_over_time.png", dpi=150)
+    plt.close()
+
+
 def parse_int_list(value: str) -> list[int]:
     return [int(v.strip()) for v in value.split(",") if v.strip()]
 
@@ -32,6 +92,22 @@ def _latest_distance(model: Model) -> int:
     if not model.cumulative_distance_history:
         return 0
     return model.cumulative_distance_history[-1]["distance"]
+
+
+def _optimal_disposal_counts(n_green_waste: pd.Series, n_yellow_waste: pd.Series, n_red_waste: pd.Series) -> dict[str, pd.Series]:
+    """Compute per-type optimal disposed counts after maximal compaction."""
+    optimal_green = n_green_waste % 2
+    green_to_yellow = n_green_waste // 2
+    yellow_pool = green_to_yellow + n_yellow_waste
+    optimal_yellow = yellow_pool % 2
+    optimal_red = yellow_pool // 2 + n_red_waste
+    optimal_total = optimal_green + optimal_yellow + optimal_red
+    return {
+        "green": optimal_green,
+        "yellow": optimal_yellow,
+        "red": optimal_red,
+        "total": optimal_total,
+    }
 
 
 def _as_batch_values(value: object) -> list[object]:
@@ -82,7 +158,7 @@ def _run_batch(
 
 
 class BatchModel(Model):
-    """Model wrapper that exposes reporters for mesa.batch_run."""
+    """Model wrapper exposing DataCollector reporters for the custom batch runner."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -100,6 +176,10 @@ class BatchModel(Model):
                 "step_all_zero": lambda m: m.step_total_zero,
                 "cleaned": lambda m: m.step_total_zero is not None,
                 "steps_executed": lambda m: m.steps,
+                "disposed_green": lambda m: m.disposed_counts["green"],
+                "disposed_yellow": lambda m: m.disposed_counts["yellow"],
+                "disposed_red": lambda m: m.disposed_counts["red"],
+                "disposed_total": lambda m: m.disposed_counts["total"],
             }
         )
         self.datacollector.collect(self)
@@ -112,11 +192,10 @@ class BatchModel(Model):
 def make_plots(summary_df: pd.DataFrame, timeseries_df: pd.DataFrame, out_dir: Path) -> None:
     sns.set_theme(style="whitegrid")
 
-    total_step_col = "step_all_zero" if "step_all_zero" in summary_df.columns else "step_total_zero"
     total_step_effective_col = (
         "step_all_zero_effective"
         if "step_all_zero_effective" in summary_df.columns
-        else total_step_col
+        else ("step_all_zero" if "step_all_zero" in summary_df.columns else "step_total_zero")
     )
 
     def _plot_metric_with_band(metric: str, title: str, ylabel: str, filename: str) -> None:
@@ -155,30 +234,6 @@ def make_plots(summary_df: pd.DataFrame, timeseries_df: pd.DataFrame, out_dir: P
         plt.savefig(out_dir / filename, dpi=150)
         plt.close()
 
-    cleaned_df = summary_df.dropna(subset=[total_step_col])
-    if not cleaned_df.empty:
-        plt.figure(figsize=(10, 5))
-        ax = sns.boxplot(data=cleaned_df, x="config", y=total_step_col)
-        ax.set_title("Distribution of cleanup step (total waste reaches 0)")
-        ax.set_xlabel("Configuration")
-        ax.set_ylabel("Step")
-        ax.tick_params(axis="x", rotation=25)
-        plt.tight_layout()
-        plt.savefig(out_dir / "cleanup_step_distribution.png", dpi=150)
-        plt.close()
-
-    total_cleanup_df = summary_df[[total_step_effective_col]].dropna().copy()
-    if not total_cleanup_df.empty:
-        total_cleanup_df["metric"] = "step_all_zero"
-        plt.figure(figsize=(6, 5))
-        ax = sns.boxplot(data=total_cleanup_df, x="metric", y=total_step_effective_col)
-        ax.set_title("Total cleanup step distribution")
-        ax.set_xlabel("Metric")
-        ax.set_ylabel("Step")
-        plt.tight_layout()
-        plt.savefig(out_dir / "total_cleanup_step_boxplot.png", dpi=150)
-        plt.close()
-
     extinction_cols = [
         "step_green_zero",
         "step_yellow_zero",
@@ -202,12 +257,39 @@ def make_plots(summary_df: pd.DataFrame, timeseries_df: pd.DataFrame, out_dir: P
         plt.savefig(out_dir / "extinction_steps_distribution.png", dpi=150)
         plt.close()
 
-    _plot_metric_with_band(
-        metric="total",
-        title="Total waste over time (mean with 95% interval)",
-        ylabel="Total waste",
-        filename="total_waste_over_time.png",
-    )
+    ratio_cols = [
+        "compaction_ratio_green",
+        "compaction_ratio_yellow",
+        "compaction_ratio_red",
+        "compaction_ratio_total",
+    ]
+    ratio_df = summary_df.melt(
+        id_vars=["config", "RunId"],
+        value_vars=[c for c in ratio_cols if c in summary_df.columns],
+        var_name="metric",
+        value_name="ratio",
+    ).dropna(subset=["ratio"])
+    if not ratio_df.empty:
+        ratio_df["metric"] = ratio_df["metric"].replace(
+            {
+                "compaction_ratio_green": "green",
+                "compaction_ratio_yellow": "yellow",
+                "compaction_ratio_red": "red",
+                "compaction_ratio_total": "total",
+            }
+        )
+        plt.figure(figsize=(11, 6))
+        ax = sns.boxplot(data=ratio_df, x="metric", y="ratio", hue="config")
+        ax.axhline(0, color="black", linewidth=1, linestyle="--")
+        ax.set_title("Compaction ratio delta vs theoretical optimum")
+        ax.set_xlabel("Waste type")
+        ax.set_ylabel("(real disposed - optimal disposed) / initial total waste")
+        ax.legend(title="Configuration")
+        plt.tight_layout()
+        plt.savefig(out_dir / "compaction_ratio_distribution.png", dpi=150)
+        plt.close()
+
+    _plot_waste_composition(timeseries_df, out_dir)
     _plot_metric_with_band(
         metric="cumulative_distance",
         title="Cumulative distance over time (mean with 95% interval)",
@@ -217,7 +299,7 @@ def make_plots(summary_df: pd.DataFrame, timeseries_df: pd.DataFrame, out_dir: P
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Batch runner for robot mission model (Mesa batch_run)")
+    parser = argparse.ArgumentParser(description="Batch runner for robot mission model")
     parser.add_argument("--green-agents", default="1", help="Comma-separated values")
     parser.add_argument("--yellow-agents", default="1", help="Comma-separated values")
     parser.add_argument("--red-agents", default="1", help="Comma-separated values")
@@ -279,13 +361,7 @@ def main() -> None:
     raw_path = out_dir / "batch_run_raw.csv"
     results_df.to_csv(raw_path, index=False)
 
-    # Keep only model-level rows (batch_run may include per-agent rows if AgentID exists).
-    if "AgentID" in results_df.columns:
-        model_rows = results_df[results_df["AgentID"].isna()].copy()
-        if model_rows.empty:
-            model_rows = results_df.copy()
-    else:
-        model_rows = results_df.copy()
+    model_rows = results_df.copy()
 
     model_rows["config"] = (
         "A(g"
@@ -321,6 +397,35 @@ def main() -> None:
         summary_df["step_all_zero_effective"] = summary_df["step_all_zero"].fillna(
             summary_df["steps_executed"]
         )
+
+    initial_total_waste = (
+        summary_df["n_green_waste"] + summary_df["n_yellow_waste"] + summary_df["n_red_waste"]
+    )
+    summary_df["initial_total_waste"] = initial_total_waste
+
+    optimal = _optimal_disposal_counts(
+        summary_df["n_green_waste"],
+        summary_df["n_yellow_waste"],
+        summary_df["n_red_waste"],
+    )
+    summary_df["optimal_green"] = optimal["green"]
+    summary_df["optimal_yellow"] = optimal["yellow"]
+    summary_df["optimal_red"] = optimal["red"]
+    summary_df["optimal_total"] = optimal["total"]
+
+    denominator = summary_df["initial_total_waste"].replace(0, pd.NA)
+    summary_df["compaction_ratio_green"] = (
+        summary_df["disposed_green"] - summary_df["optimal_green"]
+    ) / denominator
+    summary_df["compaction_ratio_yellow"] = (
+        summary_df["disposed_yellow"] - summary_df["optimal_yellow"]
+    ) / denominator
+    summary_df["compaction_ratio_red"] = (
+        summary_df["disposed_red"] - summary_df["optimal_red"]
+    ) / denominator
+    summary_df["compaction_ratio_total"] = (
+        summary_df["disposed_total"] - summary_df["optimal_total"]
+    ) / denominator
 
     summary_df["timed_out"] = (
         (~summary_df["cleaned"].fillna(False)) & (summary_df["steps_executed"] >= args.max_steps)
@@ -369,6 +474,19 @@ def main() -> None:
         "step_total_zero",
         "step_all_zero",
         "step_all_zero_effective",
+        "disposed_green",
+        "disposed_yellow",
+        "disposed_red",
+        "disposed_total",
+        "initial_total_waste",
+        "optimal_green",
+        "optimal_yellow",
+        "optimal_red",
+        "optimal_total",
+        "compaction_ratio_green",
+        "compaction_ratio_yellow",
+        "compaction_ratio_red",
+        "compaction_ratio_total",
         "green",
         "yellow",
         "red",
