@@ -12,6 +12,7 @@ from mesa.space import MultiGrid
 from agents import greenAgent, yellowAgent, redAgent
 from objects import radioactivityAgent, wasteAgent
 from config import WASTE_UPGRADE
+from messaging import Message, Mailbox
 
 class Model(Model):
     """A model with some number of agents, number of waste, and a grid cell."""
@@ -40,6 +41,8 @@ class Model(Model):
         self.grid = MultiGrid(width, height, torus=False)
         self.robotAgents = []
         self.wasteAgents = []
+        self.agent_mailboxes = {}
+        self.agent_index_by_id = {}
         self._next_agent_id = 1
         self._next_waste_id = 1
         
@@ -106,18 +109,21 @@ class Model(Model):
         for _ in range(self.num_green_agents):
             green_agent = greenAgent(self, agent_id=self.next_agent_id())
             self.robotAgents.append(green_agent)
+            self._register_robot_mailbox(green_agent)
             pos = self.get_random_free_robot_position(self.z1)
             self.grid.place_agent(green_agent, pos)
             
         for _ in range(self.num_yellow_agents):
             yellow_agent = yellowAgent(self, agent_id=self.next_agent_id())
             self.robotAgents.append(yellow_agent)
+            self._register_robot_mailbox(yellow_agent)
             pos = self.get_random_free_robot_position(self.z2)
             self.grid.place_agent(yellow_agent, pos)
             
         for _ in range(self.num_red_agents):
             red_agent = redAgent(self, agent_id=self.next_agent_id())
             self.robotAgents.append(red_agent)
+            self._register_robot_mailbox(red_agent)
             pos = self.get_random_free_robot_position(self.z3)
             self.grid.place_agent(red_agent, pos)
 
@@ -254,6 +260,8 @@ class Model(Model):
             return self.drop(agent)
         elif action == "transform":
             return self.transform(agent)
+        elif action == "send_message":
+            return self.send_agent_message(agent)
         else:
             raise ValueError(f"Unknown action: {action}")
         
@@ -351,3 +359,83 @@ class Model(Model):
             for pos in neighborhood:
                 percepts["surrounding"][pos] = self.grid.get_cell_list_contents([pos])
         return percepts
+    
+    
+ # ================================
+ ### Messaging system methods ###
+ # ================================
+    def _register_robot_mailbox(self, agent):
+        self.agent_mailboxes[agent.agent_id] = Mailbox()
+        self.agent_index_by_id[agent.agent_id] = agent
+
+    def get_new_messages(self, recipient_id):
+        mailbox = self.agent_mailboxes.get(recipient_id)
+        if mailbox is None:
+            return []
+        return mailbox.pop_new_messages()
+
+    def send_message(self, sender_id, recipient_id, performative, content):
+        mailbox = self.agent_mailboxes.get(recipient_id)
+        if mailbox is None:
+            return
+        mailbox.receive_message(
+            Message(
+                sender_id=sender_id,
+                recipient_id=recipient_id,
+                performative=performative,
+                content=content,
+            )
+        )
+
+    def broadcast_message(self, sender_id, performative, content, recipient_filter=None):
+        for recipient_id, recipient in self.agent_index_by_id.items():
+            if recipient_id == sender_id:
+                continue
+            if recipient_filter and not recipient_filter(recipient):
+                continue
+            self.send_message(sender_id, recipient_id, performative, content)
+
+    def broadcast_to_color(self, sender_id, color, performative, content, inventory_state=None):
+        def _recipient_filter(agent):
+            if getattr(agent, "team_color", None) != color:
+                return False
+            if inventory_state == "empty":
+                return len(agent.inventory) == 0
+            if inventory_state == "not_empty_target_waste":
+                return len(agent.inventory)  > 0 and agent.inventory[0].waste_type == agent.target_waste_type
+            return True
+
+        self.broadcast_message(
+            sender_id=sender_id,
+            performative=performative,
+            content=content,
+            recipient_filter=_recipient_filter,
+        )
+
+    def send_agent_message(self, agent):
+        pending = getattr(agent, "pending_message", None)
+        if pending is None:
+            return self.get_percepts(agent)
+
+        mode = pending.get("mode")
+        performative = pending.get("performative")
+        content = pending.get("content", {})
+
+        if mode == "direct":
+            recipient_id = pending.get("recipient_id")
+            if recipient_id is not None:
+                self.send_message(agent.agent_id, recipient_id, performative, content)
+        elif mode == "broadcast_color":
+            color = pending.get("color")
+            inventory_state = pending.get("inventory_state")
+            if color is not None:
+                self.broadcast_to_color(
+                    sender_id=agent.agent_id,
+                    color=color,
+                    performative=performative,
+                    content=content,
+                    inventory_state=inventory_state,
+                )
+
+        agent.pending_message = None
+        return self.get_percepts(agent)

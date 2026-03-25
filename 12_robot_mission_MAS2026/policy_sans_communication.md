@@ -1,9 +1,9 @@
-# Policies des Agents (Etape sans Communication)
+# Policies des Agents (Etape avec communication rouge)
 
 ## 1. Principe general
-- Aucun message entre agents.
-- Coordination uniquement par l'environnement (dechets poses au sol).
-- Chaque agent decide localement via ses percepts, sa memoire locale (`known_map`, `waste_map`) et ses contraintes de zone.
+- Une couche de mailbox est active dans le modele.
+- Pour cette etape, seule la communication entre agents rouges est utilisee.
+- Coordination des autres agents inchangée: via l'environnement (dechets poses au sol).
 
 ## 2. Regles communes
 - Mouvements autorises uniquement dans les zones de l'agent.
@@ -38,6 +38,10 @@
 - Types ramassables:
     - rouge: partout dans ses zones autorisees.
     - vert/jaune: uniquement sur la frontiere Z2/Z3.
+- Initialisation avec communication:
+    - Tant que la position du disposal est inconnue, chaque rouge se deplace vers la colonne Est (x = width - 1) puis la patrouille verticalement.
+    - Le premier rouge qui percoit la case disposal diffuse un broadcast `disposal_found` a tous les rouges avec la position.
+    - Les rouges qui recoivent ce message memorisent la position et quittent la phase d'initialisation.
 - `direct_handoff_mode` obligatoire des qu'un dechet est porte.
     destination unique: disposal zone.
 - Depot au disposal:

@@ -5,7 +5,8 @@ actions = {
         "move_left": 3,
         "pick_up": 4,
         "drop": 5,
-        "transform": 6
+        "transform": 6,
+        "send_message": 7,
         }
 
 WASTE_UPGRADE = {"green": "yellow", "yellow": "red"}

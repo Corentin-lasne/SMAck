@@ -9,7 +9,7 @@ Date of creation : 16/03/2026
 
 from mesa import Agent
 from config import actions
-from objects import wasteAgent
+from objects import wasteAgent, radioactivityAgent
 from collections import deque
 import random
 
@@ -36,7 +36,7 @@ class baseAgent(Agent):
         super().__init__(model)
         self.agent_id = agent_id
         self.percepts = {}
-        self.inventory = []
+        self.inventory = []        
         self.carry_steps = 0
         self.direct_handoff_mode = False
 
@@ -45,11 +45,18 @@ class baseAgent(Agent):
         self.visited = set()
         self.target_pos = None
         self.scout_target = None  # Persistent target for patrolling/scouting
+        
+        self.known_disposal_zone = None
+        
+        self.pending_message = None
+        self.received_messages = []
 
     def step(self):
         self.step_agent()
 
     def step_agent(self):
+        # Message handling is always performed at the beginning of the step.
+        self._process_incoming_messages()
         self.percepts = self.model.get_percepts(self)
         self.update(self.percepts)
         if self.inventory:
@@ -247,8 +254,54 @@ class baseAgent(Agent):
     def deliberate(self, knowledge=None):
         raise NotImplementedError("This method should be implemented by subclasses")
 
+    # ==================
+    # Message processing utilities
+    # ==================
+    
+    # 1. SENDING AND QUEUING MESSAGES
+    def _queue_direct_message(self, recipient_id, performative, content):
+        self.pending_message = {
+            "mode": "direct",
+            "recipient_id": recipient_id,
+            "performative": performative,
+            "content": content,
+        }
+
+    def _queue_broadcast_to_color(self, color, performative, content, inventory_state=None):
+        self.pending_message = {
+            "mode": "broadcast_color",
+            "color": color,
+            "performative": performative,
+            "content": content,
+            "inventory_state": inventory_state,
+        }
+
+    def _send_if_pending_action(self):
+        if self.pending_message is None:
+            return None
+        return "send_message"
+    
+    # 2. RECEIVING AND PROCESSING MESSAGES
+    def _process_incoming_messages(self):
+        new_messages = self.model.get_new_messages(self.agent_id)
+        self.received_messages.extend(new_messages)
+        for message in new_messages:
+            self._handle_message(message)
+
+    def _handle_message(self, message):
+        # Default behavior: keep message in history only.
+        return
+
+
+
+
+# ==================
+# Specific agent classes
+# ==================
+
 class greenAgent(baseAgent):
 
+    team_color = "green"
     allowed_zones = ["z1"]
     target_waste_type = "green"
     result_waste_type = "yellow"
@@ -311,6 +364,7 @@ class greenAgent(baseAgent):
 
 class yellowAgent(baseAgent):
  
+    team_color = "yellow"
     target_waste_type = "yellow"
     result_waste_type = "red"
     allowed_zones = ["z1", "z2"]
@@ -448,10 +502,58 @@ class yellowAgent(baseAgent):
 
 class redAgent(baseAgent):
  
+    team_color = "red"
     target_waste_type = "red"
     result_waste_type = None
     allowed_zones = ["z1", "z2", "z3"]
     max_capacity = 1
+
+    def __init__(self, model, agent_id=None):
+        super().__init__(model, agent_id=agent_id)
+        self.known_disposal_zone = None
+        self.column_scan_target_y = self.model.grid.height - 1 # For initial disposal search pattern
+
+
+    # ==================
+    # Disposal zone discovery and communication
+    # ==================
+    
+    def _handle_message(self, message):
+        if message.performative != "disposal_found":
+            return
+        position = message.content.get("position")
+        if isinstance(position, tuple) and len(position) == 2:
+            self.known_disposal_zone = position
+
+    def _discover_disposal_zone(self):
+        for pos, contents in self.percepts.get("surrounding", {}).items():
+            for obj in contents:
+                if isinstance(obj, radioactivityAgent) and obj.radioactivity == 10:
+                    first_discovery = self.known_disposal_zone is None
+                    self.known_disposal_zone = pos
+                    return first_discovery
+        return False
+
+    def _initial_disposal_search_action(self):
+        east_col = self.model.grid.width - 1
+        # First move to the eastern border
+        if self.pos[0] != east_col:
+            action = self._move_toward((east_col, self.pos[1]))
+            return action or self._explore_action()
+
+        # Then scan vertically along it until disposal is found.
+        safe_actions = self._safe_move_actions(self.percepts)
+        vertical_actions = [
+            (name, target_pos) for name, target_pos in safe_actions if target_pos[0] == east_col
+        ]
+        if vertical_actions:
+            best = min(vertical_actions, key=lambda item: abs(item[1][1] - self.column_scan_target_y))
+            return best[0]
+        return None
+    
+    # ==================
+    # Red agent verificiation methods
+    # ==================
 
     def can_pick_waste_type(self, waste_type):
         return waste_type in {"green", "yellow", "red"}
@@ -467,14 +569,33 @@ class redAgent(baseAgent):
         if waste_type == "red":
             return True
         return False
+    
+    # ==================
+    # Red agent main deliberation method
+    # ==================
  
     def deliberate(self):
+        discovery_is_new = self._discover_disposal_zone()
+        if discovery_is_new :
+            self._queue_broadcast_to_color(
+                color="red",
+                performative="disposal_found",
+                content={"position": self.known_disposal_zone},
+            )
+
+        send_action = self._send_if_pending_action()
+        if send_action:
+            return send_action
+
+        if self.known_disposal_zone is None:
+            return self._initial_disposal_search_action()
+
         inv_types = [w.waste_type for w in self.inventory]
 
         # Red direct-handoff mode is mandatory for any carried waste.
         if self.inventory:
             self.direct_handoff_mode = True
-            target = self.model.waste_disposal_zone
+            target = self.known_disposal_zone
             if self.pos == target:
                 return "drop"
             action = self._move_toward(target)
