@@ -52,6 +52,12 @@ class Model(Model):
         self.step_yellow_zero = None
         self.step_red_zero = None
         self.step_total_zero = None
+        self.disposed_counts = {
+            "green": 0,
+            "yellow": 0,
+            "red": 0,
+            "total": 0,
+        }
         
         # Define z1, z2, z3 as third area of the grid
         self.z1 = (0, 0, width//3, height)
@@ -315,7 +321,8 @@ class Model(Model):
             waste = agent.inventory.pop()
             if agent.pos == self.waste_disposal_zone:
                 # Disposed!
-                pass
+                self.disposed_counts[waste.waste_type] += 1
+                self.disposed_counts["total"] += 1
             else:
                 self.grid.place_agent(waste, agent.pos)
                 self.wasteAgents.append(waste)
