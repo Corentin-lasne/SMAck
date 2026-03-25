@@ -511,8 +511,8 @@ class redAgent(baseAgent):
     def __init__(self, model, agent_id=None):
         super().__init__(model, agent_id=agent_id)
         self.known_disposal_zone = None
-        self.column_scan_target_y = self.model.grid.height - 1 # For initial disposal search pattern
-
+        self.column_to_scan_for_deposital = self.model.grid.width - 2 # For initial disposal search pattern
+        self.scan_direction = None
 
     # ==================
     # Disposal zone discovery and communication
@@ -535,20 +535,31 @@ class redAgent(baseAgent):
         return False
 
     def _initial_disposal_search_action(self):
-        east_col = self.model.grid.width - 1
-        # First move to the eastern border
-        if self.pos[0] != east_col:
-            action = self._move_toward((east_col, self.pos[1]))
+        # First move to the column_to_scan_for_deposital (penultimate column).
+        if self.pos[0] != self.column_to_scan_for_deposital:
+            action = self._move_toward((self.column_to_scan_for_deposital, self.pos[1]))
             return action or self._explore_action()
 
-        # Then scan vertically along it until disposal is found.
-        safe_actions = self._safe_move_actions(self.percepts)
-        vertical_actions = [
-            (name, target_pos) for name, target_pos in safe_actions if target_pos[0] == east_col
-        ]
-        if vertical_actions:
-            best = min(vertical_actions, key=lambda item: abs(item[1][1] - self.column_scan_target_y))
-            return best[0]
+        # Once on scan column, choose a random vertical strategy and keep it
+        # until blocked (agent or boundary), then switch direction.
+        if self.scan_direction is None:
+            self.scan_direction = random.choice(["up", "down"])
+
+        safe_actions = {name: target for name, target in self._safe_move_actions(self.percepts)}
+        preferred_action = "move_up" if self.scan_direction == "up" else "move_down"
+        opposite_action = "move_down" if preferred_action == "move_up" else "move_up"
+
+        if preferred_action in safe_actions and safe_actions[preferred_action][0] == self.column_to_scan_for_deposital:
+            return preferred_action
+
+        # Obstacle encountered in preferred direction -> switch strategy.
+        self.scan_direction = "down" if self.scan_direction == "up" else "up"
+        if opposite_action in safe_actions and safe_actions[opposite_action][0] == self.column_to_scan_for_deposital:
+            return opposite_action
+
+        # If both vertical moves are blocked, temporarily sidestep to reduce clogging.
+        if "move_left" in safe_actions:
+            return "move_left"
         return None
     
     # ==================
