@@ -321,7 +321,7 @@ class Model(Model):
         """Pick up waste if the agent is on a cell with waste and return the resulting percepts."""
         cell_contents = self.grid.get_cell_list_contents([agent.pos])
         for obj in cell_contents:
-            if isinstance(obj, wasteAgent) and agent.can_add_waste_type(obj.waste_type):
+            if isinstance(obj, wasteAgent) and agent._can_add_waste_type(obj.waste_type, obj.waste_id, obj.pos):
                 agent.inventory.append(obj)
                 self.grid.remove_agent(obj)
                 if obj in self.wasteAgents:

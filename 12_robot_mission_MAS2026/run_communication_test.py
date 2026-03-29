@@ -40,6 +40,10 @@ class CommunicationTracer:
         self.events: list[MessageEvent] = []
         self.events_by_step: dict[int, list[MessageEvent]] = {}
         self._current_step = -1
+        
+        # State tracking for blockage detection
+        self.agent_state_history: dict[int, dict] = {}  # agent_id -> {step: state}
+        self.last_message_step = -1
 
         self._orig_send_message = model.send_message
 
@@ -93,6 +97,92 @@ class CommunicationTracer:
             return "none"
         return ", ".join(sorted(pairs))
 
+    def _capture_agent_state(self) -> None:
+        """Capture inventory, assignments, locks for all agents."""
+        for robot in self.model.robotAgents:
+            agent_id = robot.agent_id
+            if agent_id not in self.agent_state_history:
+                self.agent_state_history[agent_id] = {}
+            
+            inv_types = [w.waste_type for w in robot.inventory]
+            inv_ids = [getattr(w, "waste_id", None) for w in robot.inventory]
+            
+            state = {
+                "step": self._current_step,
+                "pos": robot.pos,
+                "inventory_types": inv_types,
+                "inventory_ids": inv_ids,
+                "assigned_waste_id": getattr(robot, "assigned_waste_id", None),
+                "assigned_waste_pos": getattr(robot, "assigned_waste_pos", None),
+                "locked_waste_ids": set(getattr(robot, "locked_waste_ids", set())),
+                "color": getattr(robot, "team_color", None),
+            }
+            self.agent_state_history[agent_id][self._current_step] = state
+
+    def _detect_stalled_agents(self, min_steps: int = 30) -> list[str]:
+        """Detect agents that have had assignment for N steps without progressing."""
+        stalled = []
+        for robot in self.model.robotAgents:
+            assigned = getattr(robot, "assigned_waste_id", None)
+            if assigned is None:
+                continue
+            
+            agent_id = robot.agent_id
+            assigned_pos = getattr(robot, "assigned_waste_pos", None)
+            current_pos = robot.pos
+            inv_ids = [getattr(w, "waste_id", None) for w in robot.inventory]
+            
+            # Check: does agent have the assigned waste?
+            if assigned in inv_ids:
+                continue  # Already carrying it
+            
+            # How long has it been assigned?
+            history = self.agent_state_history.get(agent_id, {})
+            steps_with_assignment = sum(
+                1 for s in history.values()
+                if s.get("assigned_waste_id") == assigned
+            )
+            
+            if steps_with_assignment >= min_steps:
+                stalled.append(
+                    f"A{agent_id}({getattr(robot, 'team_color', '?')}) "
+                    f"assigned->W{assigned} for {steps_with_assignment} steps, "
+                    f"pos={current_pos}, assigned_pos={assigned_pos}, "
+                    f"inv={inv_ids}, locked={getattr(robot, 'locked_waste_ids', set())}"
+                )
+        
+        return stalled
+
+    def _detect_universal_locks(self) -> list[str]:
+        """Detect waste IDs that are locked by all agents of a color."""
+        locks_by_color: dict[str, dict] = {}
+        
+        for robot in self.model.robotAgents:
+            color = getattr(robot, "team_color", None)
+            if color not in locks_by_color:
+                locks_by_color[color] = {}
+            
+            for waste_id in getattr(robot, "locked_waste_ids", set()):
+                if waste_id not in locks_by_color[color]:
+                    locks_by_color[color][waste_id] = []
+                locks_by_color[color][waste_id].append(robot.agent_id)
+        
+        issues = []
+        for color, waste_locks in locks_by_color.items():
+            color_agents_count = sum(
+                1 for r in self.model.robotAgents 
+                if getattr(r, "team_color", None) == color
+            )
+            
+            for waste_id, agent_list in waste_locks.items():
+                if len(agent_list) == color_agents_count:
+                    issues.append(
+                        f"UNIVERSAL LOCK: W{waste_id} locked by ALL {color} agents "
+                        f"({color_agents_count}): {agent_list}"
+                    )
+        
+        return issues
+
     def _filtered_step_events(self, step: int) -> list[MessageEvent]:
         events = self.events_by_step.get(step, [])
         return [
@@ -103,6 +193,13 @@ class CommunicationTracer:
 
     def print_step(self, step: int, print_empty_steps: bool) -> None:
         filtered = self._filtered_step_events(step)
+        
+        # Capture state every step for analysis
+        self._capture_agent_state()
+        
+        if filtered:
+            self.last_message_step = step
+        
         if not filtered and not print_empty_steps:
             return
 
@@ -142,6 +239,7 @@ class CommunicationTracer:
 
         print("\n=== Communication summary (focus colors only) ===")
         print(f"total_messages={len(filtered)}")
+        print(f"last_message_at_step={self.last_message_step}")
         if not pair_counter:
             print("pairs: none")
             print("hint: no green/yellow protocol seems to emit messages in this branch.")
@@ -149,27 +247,92 @@ class CommunicationTracer:
 
         for pair, count in sorted(pair_counter.items()):
             print(f"pairs {pair}: {count}")
+        
+        # ========== BLOCKAGE DIAGNOSTICS ==========
+        print("\n=== BLOCKAGE DIAGNOSTICS ===")
+        
+        # 1. Stalled agents (have assignment but can't acquire it)
+        print("\n[1] STALLED AGENTS (assigned but not progressing):")
+        stalled = self._detect_stalled_agents(min_steps=30)
+        if stalled:
+            for msg in stalled:
+                print(f"  ⚠️  {msg}")
+        else:
+            print("  ✓ None detected")
+        
+        # 2. Universal locks (all agents of a color locked on same waste)
+        print("\n[2] UNIVERSAL LOCKS (all agents locked on same waste_id):")
+        universal_locks = self._detect_universal_locks()
+        if universal_locks:
+            for msg in universal_locks:
+                print(f"  ⚠️  {msg}")
+        else:
+            print("  ✓ None detected")
+        
+        # 3. Agents with inventory but no assignment (should be blocked from pickup by refractory)
+        print("\n[3] AGENTS CARRYING WITHOUT ASSIGNMENT (potential drop issues):")
+        carrying_unassigned = []
+        for robot in self.model.robotAgents:
+            if not robot.inventory:
+                continue
+            assigned = getattr(robot, "assigned_waste_id", None)
+            if assigned is not None:
+                continue  # Has assignment, ok
+            
+            inv_types = [w.waste_type for w in robot.inventory]
+            inv_ids = [getattr(w, "waste_id", None) for w in robot.inventory]
+            carrying_unassigned.append(
+                f"A{robot.agent_id}({getattr(robot, 'team_color', '?')}) "
+                f"carrying {inv_types} (ids={inv_ids}), no assignment"
+            )
+        
+        if carrying_unassigned:
+            for msg in carrying_unassigned:
+                print(f"  ⚠️  {msg}")
+        else:
+            print("  ✓ None detected")
+        
+        # 4. Current assignments snapshot
+        print("\n[4] CURRENT ASSIGNMENTS:")
+        current_assignments = []
+        for robot in self.model.robotAgents:
+            assigned = getattr(robot, "assigned_waste_id", None)
+            if assigned is None:
+                continue
+            
+            inv_ids = [getattr(w, "waste_id", None) for w in robot.inventory]
+            status = "✓ IN_INVENTORY" if assigned in inv_ids else "⏳ PENDING"
+            current_assignments.append(
+                f"A{robot.agent_id}({getattr(robot, 'team_color', '?')}) "
+                f"assigned->W{assigned} {status} pos={robot.pos}"
+            )
+        
+        if current_assignments:
+            for msg in current_assignments:
+                print(f"  {msg}")
+        else:
+            print("  ✓ No active assignments")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compact communication debugger for green/yellow agents")
-    parser.add_argument("--steps", type=int, default=150, help="Maximum number of simulation steps")
-    parser.add_argument("--seed", type=int, default=7, help="Random seed for deterministic run")
+    parser.add_argument("--steps", type=int, default=1000, help="Maximum number of simulation steps")
+    parser.add_argument("--seed", type=int, default=8, help="Random seed for deterministic run")
     parser.add_argument("--width", type=int, default=30)
     parser.add_argument("--height", type=int, default=30)
 
-    parser.add_argument("--green-agents", type=int, default=4)
-    parser.add_argument("--yellow-agents", type=int, default=3)
-    parser.add_argument("--red-agents", type=int, default=1)
+    parser.add_argument("--green-agents", type=int, default=5)
+    parser.add_argument("--yellow-agents", type=int, default=6)
+    parser.add_argument("--red-agents", type=int, default=8)
 
-    parser.add_argument("--green-waste", type=int, default=12)
-    parser.add_argument("--yellow-waste", type=int, default=8)
-    parser.add_argument("--red-waste", type=int, default=2)
+    parser.add_argument("--green-waste", type=int, default=15)
+    parser.add_argument("--yellow-waste", type=int, default=15)
+    parser.add_argument("--red-waste", type=int, default=15)
 
     parser.add_argument(
         "--focus-colors",
-        default="green,yellow",
-        help="Comma-separated colors to focus in logs (default: green,yellow)",
+        default="green,yellow,red",
+        help="Comma-separated colors to focus in logs (default: green,yellow,red)",
     )
     parser.add_argument(
         "--print-empty-steps",

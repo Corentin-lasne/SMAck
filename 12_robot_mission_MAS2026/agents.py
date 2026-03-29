@@ -39,7 +39,6 @@ class baseAgent(Agent):
         self.percepts = {}
         self.inventory = []        
         self.carry_steps = 0
-        self.direct_handoff_mode = False
 
         self.known_map = {}
         self.waste_map = {}
@@ -56,9 +55,17 @@ class baseAgent(Agent):
         self.locked_waste_ids = set()
         self.assigned_waste_id = None
         self.assigned_waste_pos = None
-        self.assigned_requester_id = None  # For carry_query: ID of the green agent requesting pickup
-        self.requested_waste_ids = set()
         self.id_and_position_carrier_response = {}
+        self.id_last_query = None
+        self.step_last_query = None
+        self.query_sent_for_batch = None
+        self.carry_response_query_id = None
+        self.blocked_from_pickup_until = -1
+        self.carry_response_lock_until = -1
+        self.pending_handoff_waste_id = None
+        self.pending_handoff_waste_pos = None
+        self.assigned_stale_steps = 0
+
 
     def step(self):
         self.step_agent()
@@ -72,7 +79,6 @@ class baseAgent(Agent):
             self.carry_steps += 1
         else:
             self.carry_steps = 0
-            self.direct_handoff_mode = False
         action = self.deliberate()
         new_percepts = self.model.do(self, action)
         self.update(new_percepts)
@@ -81,29 +87,6 @@ class baseAgent(Agent):
     def _carry_step_limit(self):
         """Return carry timeout in number of steps, based on grid size."""
         return (self.model.grid.width + self.model.grid.height)/2
-
-    def can_pick_waste_type(self, waste_type):
-        """Return True when this agent can pick the given waste type."""
-        return waste_type == self.target_waste_type
-
-    def can_add_waste_type(self, waste_type):
-        """Apply carrying constraints before allowing a pickup."""
-        if not self.can_pick_waste_type(waste_type):
-            return False
-        if len(self.inventory) >= self.max_capacity:
-            return False
-        if not self.inventory:
-            return True
-
-        # If carrying a non-native waste, this must remain the only carried item.
-        if any(w.waste_type != self.target_waste_type for w in self.inventory):
-            return False
-
-        # Non-native waste can only be carried alone.
-        if waste_type != self.target_waste_type:
-            return False
-
-        return True
 
     def _eastern_border_x(self):
         """Return the easternmost x-column allowed for this agent."""
@@ -114,19 +97,25 @@ class baseAgent(Agent):
         }
         right_cols = [zone_bounds[z][2] - 1 for z in self.allowed_zones if z in zone_bounds]
         return max(right_cols)
+    
+    def _western_border_x(self):
+        """Return the westernmost x-column of his allowed area for this agent."""
+        zone_bounds = {
+            "z1": self.model.z1,
+            "z2": self.model.z2,
+            "z3": self.model.z3,
+        }
+        # 
+        z = self.allowed_zones[-1]  
+        return zone_bounds[z][0] - 1 
 
-    def _timeout_drop_action(self):
+    def _timeout_drop_action(self, target_x, performative, receiving_group, waste_type):
         """If carrying for too long, force move to eastern border then drop."""
         if not self.inventory:
             return None
         if self.carry_steps < self._carry_step_limit():
             return None
-
-        target_x = self._eastern_border_x()
-        if self.pos[0] == target_x:
-            return "drop"
-        action = self._move_toward((target_x, self.pos[1]))
-        return action or self._explore_action()
+        return self._deliver(target_x=target_x, performative=performative, receiving_group=receiving_group, waste_type=waste_type)
 
     def _known_targets_on_frontier(self, waste_type, frontier_x):
         """Return known positions of given waste type located on frontier column."""
@@ -134,21 +123,9 @@ class baseAgent(Agent):
         for p, entries in self.waste_entries_map.items():
             if p[0] != frontier_x or not self.model.is_position_allowed(self, p):
                 continue
-            if any(wt == waste_type and self._is_waste_id_allowed(wid) for wt, wid in entries):
+            if any(wt == waste_type and self._can_add_waste_type(wt, wid, p) for wt, wid in entries):
                 targets.append(p)
         return targets
-
-    def _is_waste_id_allowed(self, waste_id):
-        if self.assigned_waste_id is not None and waste_id == self.assigned_waste_id:
-            return True
-        return waste_id not in self.locked_waste_ids
-
-    def _can_pick_object(self, obj):
-        if not isinstance(obj, wasteAgent):
-            return False
-        if not self.can_add_waste_type(obj.waste_type):
-            return False
-        return self._is_waste_id_allowed(getattr(obj, "waste_id", None))
 
     def update(self, percepts):
         surrounding = percepts.get("surrounding", {})
@@ -283,9 +260,303 @@ class baseAgent(Agent):
         if safe:
             return random.choice(safe)[0]
         return None
+    
+    def _can_add_waste_type(self, waste_type, waste_id, waste_pos):
+        if len(self.inventory) >= self.max_capacity:
+            return False
+        
+        if waste_id in self.locked_waste_ids and waste_id != self.assigned_waste_id:
+            return False
+        
+        # If carrying a non-native waste, this must remain the only carried item.
+        if any(w.waste_type != self.target_waste_type for w in self.inventory):
+            return False
+        
+        left_border_x = self._eastern_border_x()
+        right_border_x = self._western_border_x()
+        inv_types = [w.waste_type for w in self.inventory]
+        
+        if self.team_color == "green":
+            if waste_type != "green":
+                return False
+            # Green agent cannot pick a green at Z1/Z2 frontier when empty.
+            if waste_pos[0] == left_border_x and len(self.inventory) == 0:
+                return False
+            return True
+
+        if self.team_color == "yellow":
+            if waste_type == "green":
+                # Yellow can carry green only from Z1/Z2 frontier, and only with empty inventory.
+                return waste_pos[0] == right_border_x and len(self.inventory) == 0
+
+            if waste_type == "yellow":
+                # If carrying green, yellow must remain the only item.
+                if "green" in inv_types or "red" in inv_types:
+                    return False
+                # At Z2/Z3 frontier, yellow can be picked only if already carrying yellow.
+                if waste_pos[0] == left_border_x and "yellow" not in inv_types:
+                    return False
+                return True
+            # Yellow agent never picks red from the floor.
+            return False
+        
+        if self.team_color == "red":
+            if waste_type in {"green", "yellow"}:
+                # Red can pick green/yellow only on Z2/Z3 frontier.
+                return waste_pos[0] == right_border_x and len(self.inventory) == 0
+            if waste_type == "red":
+                return True
+            return False
+ 
 
     def deliberate(self, knowledge=None):
         raise NotImplementedError("This method should be implemented by subclasses")
+
+    # ==================
+    # Delivery action with communication for agents
+    # ==================
+    def _delivery_candidate_waste_id(self):
+        """Return the waste id that would be dropped next by model.drop (LIFO)."""
+        if not self.inventory:
+            return None
+        return getattr(self.inventory[-1], "waste_id", None)
+
+    # Initie la communication des livraisons
+    def _queue_delivery_query(self, performative, receiving_group, waste_type):
+        """Send carry_query broadcast to all empty yellow robots for yellow waste delivery (once per load)."""
+        candidate_waste_id = self._delivery_candidate_waste_id()
+        if candidate_waste_id is None:
+            return False
+
+        # Check if we already sent a query for this batch of yellows (avoid resending)
+        if getattr(self, "query_sent_for_batch", None) == candidate_waste_id:
+            return False
+        
+        # Broadcast carry_query to all full yellows
+        self._queue_broadcast_to_color(
+            color=receiving_group,
+            performative=performative,
+            content={
+                "query_id": self.model.next_query_id(),
+                "waste_type": waste_type,
+                "waste_id": candidate_waste_id,
+            },
+        ) 
+        self.id_last_query = self.model.next_query_id() - 1
+        self.step_last_query = self.current_step
+        self.query_sent_for_batch = candidate_waste_id
+        return True
+    
+    def _accept_delivery_query(self, message):
+        # Accept: send an acceptance message of the query request
+        # Seulement si n'a pas déjà accepté une query récemment
+        if self.current_step >= getattr(self, "carry_response_lock_until", -1):
+            sender_id = message.sender_id
+            self._queue_direct_message(
+                recipient_id=sender_id,
+                performative="carry_response",
+                content={
+                    "query_id": message.content.get("query_id"),
+                    "accepted": True,
+                    "agent_position" : self.pos,
+                },
+            )
+            # BLOQUER les pickups pour l'étape suivante (en cas de delivery_details)
+            self.blocked_from_pickup_until = self.current_step + 2
+            # Bloquer les réponses à d'autres queries de livraison pendant un certain nombre d'étapes pour éviter les conflits et les réponses multiples
+            self.carry_response_lock_until = self.current_step + 2
+
+    # Envoie un message direct au robot sélectionné pour lui donner les détails de la livraison
+    def _queue_detail_delivery(self, recipient_id, waste_id, waste_pos):
+        self._queue_direct_message(
+            recipient_id=recipient_id,
+            performative="delivery_details",
+            content={
+                "waste_id": waste_id,
+                "waste_pos": waste_pos,
+            },
+        )
+
+    # Envoie un message direct à tous les robots que le waste a été prise (lock) et qu'ils ne doivent pas la prendre (même à celui qui a été sélectionné car dans sas gestion des messages il pourra ignorer le lock)
+    def _queue_lock_delivery(self, receiving_group, waste_id):
+        self._queue_broadcast_to_color(
+            color=receiving_group,
+            performative="lock_delivery",
+            content={
+                "waste_id": waste_id,
+            },
+        )
+
+    def _deliver(self, target_x, performative, receiving_group, waste_type):
+         # Je dois atteindre la frontière 
+        if self.pos[0] == target_x:
+            # Tout ce qui passe avant le drop
+            if len(self.inventory) != 0 : 
+                # Before dropping, broadcast carry_query to all robots that can handle the delivery
+                if self._queue_delivery_query(performative=performative, receiving_group=receiving_group, waste_type=waste_type):
+                    return "send_message"
+            
+                # Wait 2 steps for yellow to answer
+                # First tempo, drop
+                candidate_waste_id = self._delivery_candidate_waste_id()
+                if (
+                    getattr(self, "step_last_query", -10) == self.current_step - 1
+                    and candidate_waste_id is not None
+                    and getattr(self, "query_sent_for_batch", None) == candidate_waste_id
+                ):
+                    # Keep explicit handoff context so detail/lock target the exact dropped waste.
+                    self.pending_handoff_waste_id = candidate_waste_id
+                    self.pending_handoff_waste_pos = self.pos
+                    return "drop"
+            
+            # Second tempo après le drop, all the answers should have had arrived
+            if getattr(self, "step_last_query", -10) == self.current_step - 2:
+                # Sélectionner le robot qui est le plus proche de moi parmi ceux qui ont répondu positivement
+                current_query_id = getattr(self, "id_last_query", None)
+                candidates = self.id_and_position_carrier_response.get(current_query_id, [])
+                if candidates:
+                    closest = min(candidates, key=lambda c: manhattan(self.pos, c[1]))
+                    handoff_waste_id = self.pending_handoff_waste_id
+                    handoff_waste_pos = self.pending_handoff_waste_pos
+                    if handoff_waste_id is None:
+                        handoff_waste_id = self._delivery_candidate_waste_id()
+                    if handoff_waste_pos is None:
+                        handoff_waste_pos = self.pos
+                    # Ajouter dans les pendings messages un message direct à ce jaune pour lui donner les détails de la livraison (id de la waste à prendre, etc.)
+                    self._queue_detail_delivery(recipient_id=closest[0], waste_id=handoff_waste_id, waste_pos=handoff_waste_pos)
+                    # Envoyer un lock à tous les autres jaunes pour ne pas qu'ils le prennent
+                    self._queue_lock_delivery(receiving_group=receiving_group, waste_id=handoff_waste_id)
+
+                    if current_query_id in self.id_and_position_carrier_response:
+                        del self.id_and_position_carrier_response[current_query_id]
+
+                    self.id_last_query = None
+                    self.step_last_query = None
+                    self.query_sent_for_batch = None
+                    self.pending_handoff_waste_id = None
+                    self.pending_handoff_waste_pos = None
+                    return "send_message"
+
+                # No carry_response received: allow drop-out, but never emit lock.
+                if current_query_id in self.id_and_position_carrier_response:
+                    del self.id_and_position_carrier_response[current_query_id]
+                self.id_last_query = None
+                self.step_last_query = None
+                self.query_sent_for_batch = None
+                self.pending_handoff_waste_id = None
+                self.pending_handoff_waste_pos = None
+            
+            
+                
+        action = self._move_toward((target_x, self.pos[1]))
+        return action or self._explore_action()
+   
+    # ==================
+    # Handling incoming messages for delivery coordination and other
+    # ==================
+    def _handle_message(self, message):
+        # handle carry_query
+        if message.performative == "carry_query_not_empty" or message.performative == "carry_query_empty":    
+            # Conditions pour accepter
+            inv_types = [w.waste_type for w in self.inventory]
+            can_accept_not_emtpy = len(self.inventory) == 1 and message.content.get("waste_type") in inv_types and self.assigned_waste_id is None
+            can_accept_empty = len(self.inventory) == 0 and self.assigned_waste_id is None
+            
+            # Only a response if we can accept, otherwise we ignore the message and let the requester timeout.
+            if can_accept_not_emtpy and message.performative == "carry_query_not_empty":
+                self._accept_delivery_query(message)
+            if can_accept_empty and message.performative == "carry_query_empty":
+                self._accept_delivery_query(message)
+            return
+        
+        # Réponse aux carry_response
+        if message.performative == "carry_response":
+            # On garde les ids et positions des jaunes qui ont répondu dans le dictionnaire de self.id_and_position_carrier_response. Les clefs sont l'id de la requête et dont le contenu associé est une liste de liste de [id_agent, pos_agent] des répondants qu'on fait grossir 
+            query_id = message.content.get("query_id")
+            if query_id not in self.id_and_position_carrier_response:
+                self.id_and_position_carrier_response[query_id] = []
+            self.id_and_position_carrier_response[query_id].append([message.sender_id, message.content.get("agent_position")])
+        
+        
+        if message.performative == "delivery_details":
+            # delivery_details is a direct message from green to yellow with pickup instructions
+            waste_id = message.content.get("waste_id")
+            waste_pos = message.content.get("waste_pos")
+            self.assigned_waste_id = waste_id
+            self.assigned_waste_pos = waste_pos
+            self.assigned_stale_steps = 0
+            self.locked_waste_ids.discard(waste_id)  # Bien que l'ordre des messages soit théoriquement bon, le scheduler peut créer des problèmes de dépouillement
+            return
+                                            
+        if message.performative == "lock_delivery":
+            # lock_delivery is a broadcast from a green to all yellows indicating that a specific waste has been assigned and should not be taken by others.
+            waste_id = message.content.get("waste_id")
+            # s'il n'y a pas eu au préalable un message pour l'assigner alors il faut le lock
+            if waste_id != self.assigned_waste_id:
+                self.locked_waste_ids.add(waste_id)
+            return
+        
+        # Exclusively for red agents
+        if message.performative != "disposal_found":
+            return
+        position = message.content.get("position")
+        if isinstance(position, tuple) and len(position) == 2:
+            self.known_disposal_zone = position
+        
+    # ==================
+    # Resolve assigned waste action
+    # ==================
+        
+    def _resolve_assigned_waste_action(self):
+        """Assigned pickup has priority over normal behavior. Handle both waste and requester assignments."""
+        if self.assigned_waste_id is None:
+            self.assigned_stale_steps = 0
+            return None
+
+        # Handle carry_request assignment: navigate to waste and pick it up (classic case)
+        if self.assigned_waste_pos is not None:
+            action = self._move_toward(self.assigned_waste_pos)
+            if action:
+                return action
+
+        current_contents = self.percepts.get("surrounding", {}).get(self.pos, [])
+        # Gestion du cas où l'objet dont l'id a été assigné est présent
+        assigned_here_and_pickable = any(
+            isinstance(obj, wasteAgent)
+            and getattr(obj, "waste_id", None) == self.assigned_waste_id
+            and self._can_add_waste_type(obj.waste_type, obj.waste_id, obj.pos)
+            for obj in current_contents
+        )
+        if assigned_here_and_pickable:
+            if self.current_step >= getattr(self, "blocked_from_pickup_until", -1):
+                self.assigned_stale_steps = 0
+                self.assigned_waste_id = None
+                self.assigned_waste_pos = None
+                return "pick_up"
+            return None
+
+        # Re-localize assigned waste from known map when not at the expected position.
+        reassigned_pos = None
+        for pos, entries in self.waste_entries_map.items():
+            if any(wid == self.assigned_waste_id for _, wid in entries):
+                reassigned_pos = pos
+                break
+
+        if reassigned_pos is not None:
+            self.assigned_stale_steps = 0
+            self.assigned_waste_pos = reassigned_pos
+            action = self._move_toward(reassigned_pos)
+            if action:
+                return action
+            return None
+
+        # If assignment cannot be found for several steps, release it to avoid permanent deadlock.
+        self.assigned_stale_steps += 1
+        if self.assigned_stale_steps >= 8:
+            self.assigned_waste_id = None
+            self.assigned_waste_pos = None
+            self.assigned_stale_steps = 0
+        return None
 
     # ==================
     # Message processing utilities
@@ -325,18 +596,15 @@ class baseAgent(Agent):
         # Keep carry_response history by query_id; green agent consumes it when needed.
         
 
-    def _handle_message(self, message):
-        # Default behavior: keep message in history only.
-        return
-    
-    # 3. SPECIFIC HANDLERS FOR COMMUNICATION ON DELIVERY
-    
+
+
+
 
 
 
 
 # ==================
-# Specific agent classes
+# SPECIFIC AGENT CLASSES
 # ==================
 
 class greenAgent(baseAgent):
@@ -346,72 +614,6 @@ class greenAgent(baseAgent):
     target_waste_type = "green"
     result_waste_type = "yellow"
     max_capacity = 2
-
-    def can_add_waste_type(self, waste_type):
-        if waste_type != "green":
-            return False
-        if len(self.inventory) >= self.max_capacity:
-            return False
-
-        border_x = self.model.z1[2] - 1
-        # Green agent cannot pick a green at Z1/Z2 frontier when empty.
-        if self.pos[0] == border_x and len(self.inventory) == 0:
-            return False
-        return True
-    
-    # ==================
-    # Delivery communication for green agents
-    # ==================
-    # Initie la communication des livraisons
-    def _queue_yellow_delivery_query(self):
-        """Send carry_query broadcast to all empty yellow robots for yellow waste delivery (once per load)."""
-        # Check if we already sent a query for this batch of yellows (avoid resending)
-        if getattr(self, "_yellow_query_sent_for_batch", None) == id(self.inventory):
-            return False
-
-        # Broadcast carry_query to all empty yellows
-        self._queue_broadcast_to_color(
-            color="yellow",
-            performative="carry_query",
-            content={
-                "query_id": self.model.next_query_id(),
-                "waste_type": "yellow",
-            },
-        ) 
-        self._id_last_query = self.model.next_query_id() - 1
-        self._step_last_query = self.current_step
-        self._yellow_query_sent_for_batch = id(self.inventory)
-        return True
-    
-    # Verifie qu'il y a eu au moins une réponse de la part des jaunes
-    def _handle_message(self, message):
-        if message.performative == "carry_response":
-            # On garde les ids et positions des jaunes qui ont répondu dans le dictionnaire de self.id_and_position_carrier_response. Les clefs sont l'id de la requête et dont le contenu associé est une liste de liste de [id_agent, pos_agent] des répondants qu'on fait grossir 
-            query_id = message.content.get("query_id")
-            if query_id not in self.id_and_position_carrier_response:
-                self.id_and_position_carrier_response[query_id] = []
-            self.id_and_position_carrier_response[query_id].append([message.sender_id, message.content.get("agent_position")])
-
-    # Envoie un message direct au jaune sélectionné pour lui donner les détails de la livraison
-    def _queue_detail_delivery(self, recipient_id):
-        self._queue_direct_message(
-            recipient_id=recipient_id,
-            performative="delivery_details",
-            content={
-                "waste_id": self.waste_id_map.get(self.pos),
-                "waste_pos": self.pos,
-            },
-        )
-        
-    # Envoie un message direct à tous les jaunes que le waste a été prise (lock) et qu'ils ne doivent pas la prendre (même à celui qui a été sélectionné car dans sas gestion des messages il pourra ignorer le lock)
-    def _queue_lock_delivery(self, group):
-        self._queue_broadcast_to_color(
-            color=group,
-            performative="lock_delivery",
-            content={
-                "waste_id": self.waste_id_map.get(self.pos),
-            },
-        )
     
     # ==================
     # Deliberation for green agents
@@ -420,68 +622,43 @@ class greenAgent(baseAgent):
     def deliberate(self):
         inv_types = [w.waste_type for w in self.inventory]
 
+        # Strict priority: if a response is queued, sending it consumes this turn.
         send_action = self._send_if_pending_action()
         if send_action:
             return send_action
 
-        timeout_action = self._timeout_drop_action()
+        # ===== LIVRAISON VERTE =====
+        # Gestion du cas où on doit livrer un déchet vert à la frontière parce qu'on a atteint le timeout
+        timeout_action = self._timeout_drop_action(target_x=self._eastern_border_x(), performative="carry_query_empty", receiving_group ="yellow", waste_type="green")
         if timeout_action:
             return timeout_action
 
+        # ===== LIVRAISON JAUNE =====
         # Gestion du cas où on doit livrer un déchet jaune à la fronière et qu'on effectue les échanges de communication sur la delivery 
-        if "yellow" in inv_types or getattr(self, "_step_last_query", -10) == self.current_step - 2 :
-            target_x = self.model.z1[2] - 1  # Z1/Z2 frontier
-            
-            # Je dois atteindre la frontière 
-            if self.pos[0] == target_x:
-                
-                # Before dropping, broadcast carry_query to all empty yellow robots
-                if self._queue_yellow_delivery_query():
-                    return "send_message"
-            
-                # Wait 2 steps for yellow to answer
-                # First tempo, drop
-                if getattr(self, "_step_last_query", -10) == self.current_step - 1:
-                    return "drop"
-                
-                # Second tempo, all the answers should have had arrived
-                if getattr(self, "_step_last_query", -10) == self.current_step - 2:
-                    # Sélectionner le jaune qui est le plus proche de moi parmi ceux qui ont répondu positivement
-                    candidates = self.id_and_position_carrier_response.get(getattr(self, "_id_last_query", None), [])
-                    if candidates:
-                        closest = min(candidates, key=lambda c: manhattan(self.pos, c[1]))
-                        # Ajouter dans les pendings messages un message direct à ce jaune pour lui donner les détails de la livraison (id de la waste à prendre, etc.)
-                        self._queue_detail_delivery(recipient_id=closest[0])
-                        # Envoyer un lock à tous les autres jaunes pour ne pas qu'ils le prennent
-                        self._queue_lock_delivery("yellow")
-                        return "send_message"
-                    
-                
-            action = self._move_toward((target_x, self.pos[1]))
-            return action or self._explore_action()
-        self.direct_handoff_mode = False
+        if "yellow" in inv_types or getattr(self, "step_last_query", -10) == self.current_step - 2 :
+            return self._deliver(target_x = self._eastern_border_x(), performative="carry_query_not_empty", receiving_group="yellow", waste_type="yellow")
         
         # 1. Transform if full of green
         if inv_types.count("green") >= 2:
             return "transform"
 
-        # 3. Pick up green waste if here
+        # 3. Pick up green waste if here under green constraints
         current_contents = self.percepts.get("surrounding", {}).get(self.pos, [])
-        if any(isinstance(o, wasteAgent) and self.can_add_waste_type(o.waste_type) for o in current_contents):
+        if any(isinstance(o, wasteAgent) and self._can_add_waste_type(o.waste_type, o.waste_id, o.pos) for o in current_contents):
             return "pick_up"
 
         # 4. Move to known green waste
-        border_x = self.model.z1[2] - 1
+        border_x = self._eastern_border_x()
         green_targets = [
             p for p, entries in self.waste_entries_map.items()
             if self.model.is_position_allowed(self, p)
-            and not (p[0] == border_x and len(self.inventory) == 0)
-            and any(wt == "green" and self._is_waste_id_allowed(wid) for wt, wid in entries)
+            and any(wt == "green" and self._can_add_waste_type(wt, wid, p) for wt, wid in entries)
         ]
         if green_targets:
             closest = min(green_targets, key=lambda p: manhattan(self.pos, p))
             if closest == self.pos:
-                return "pick_up"
+                if self.current_step >= getattr(self, "blocked_from_pickup_until", -1):
+                    return "pick_up"
             action = self._move_toward(closest)
             return action or self._explore_action()
 
@@ -495,129 +672,6 @@ class yellowAgent(baseAgent):
     allowed_zones = ["z1", "z2"]
     max_capacity = 2
 
-    def can_add_waste_type(self, waste_type):
-        if len(self.inventory) >= self.max_capacity:
-            return False
-
-        left_border_x = self.model.z1[2] - 1
-        right_border_x = self.model.z2[2] - 1
-        inv_types = [w.waste_type for w in self.inventory]
-
-        if waste_type == "green":
-            # Yellow can carry green only from Z1/Z2 frontier, and only with empty inventory.
-            return self.pos[0] == left_border_x and len(self.inventory) == 0
-
-        if waste_type == "yellow":
-            # If carrying green, yellow must remain the only item.
-            if "green" in inv_types:
-                return False
-            # At Z2/Z3 frontier, yellow can be picked only if already carrying yellow.
-            if self.pos[0] == right_border_x and "yellow" not in inv_types:
-                return False
-            return True
-
-        # Yellow agent never picks red from the floor.
-        return False
-    
-    # ==================
-    # Delivery communication for yellow agents
-    # ==================
-    
-
-    def _handle_message(self, message):
-        # Handle carry_query (for yellow wastes)
-        if message.performative == "carry_query":
-            # carry_query is a broadcast from a green at frontier offering yellow pickup
-            sender_id = message.sender_id
-            
-            # Conditions pour accepter
-            inv_types = [w.waste_type for w in self.inventory]
-            can_accept = len(self.inventory) == 1 and "yellow" in inv_types and self.assigned_waste_id is None and self.assigned_requester_id is None
-            
-            # Only a response if we can accept, otherwise we ignore the message and let the requester timeout.
-            if can_accept:
-                # Accept: move to requester's position to pickup yellow
-                self.assigned_requester_id = sender_id
-                self._queue_direct_message(
-                    recipient_id=sender_id,
-                    performative="carry_response",
-                    content={
-                        "query_id": message.content.get("query_id"),
-                        "accepted": True,
-                        "agent_position" : self.pos,
-                    },
-                )
-            return
-        
-        if message.performative == "delivery_details":
-            # delivery_details is a direct message from green to yellow with pickup instructions
-            waste_id = message.content.get("waste_id")
-            waste_pos = message.content.get("waste_pos")
-            self.assigned_waste_id = waste_id
-            self.assigned_waste_pos = waste_pos
-            return
-                                            
-        if message.performative == "lock_delivery":
-            # lock_delivery is a broadcast from a green to all yellows indicating that a specific waste has been assigned and should not be taken by others.
-            waste_id = message.content.get("waste_id")
-            # s'il n'y a pas eu au préalable un message pour l'assigner alors il faut le lock
-            if waste_id != self.assigned_waste_id:
-                self.locked_waste_ids.add(waste_id)
-            return
-
-    def _resolve_assigned_waste_action(self):
-        """Assigned pickup has priority over normal yellow behavior. Handle both waste and requester assignments."""
-        # Handle carry_query assignment: navigate to requester to pick up yellow
-        if self.assigned_requester_id is not None:
-            requester = self.model.agent_index_by_id.get(self.assigned_requester_id)            
-            requester_pos = requester.pos
-            if requester_pos is None:
-                return None
-            
-            # Check if we're at requester's position and can pick up yellow
-            if self.pos == requester_pos:
-                current_contents = self.percepts.get("surrounding", {}).get(self.pos, [])
-                if any(
-                    isinstance(obj, wasteAgent)
-                    and obj.waste_type == "yellow"
-                    and self.can_add_waste_type(obj.waste_type)
-                    for obj in current_contents
-                ):
-                    return "pick_up"
-            
-            # Navigate to requester
-            action = self._move_toward(requester_pos)
-            if action:
-                return action
-            return None
-
-        # Handle carry_request assignment: navigate to waste and pick it up (classic case)
-        if self.assigned_waste_pos is not None:
-            action = self._move_toward(self.assigned_waste_pos)
-            if action:
-                return action
-
-        current_contents = self.percepts.get("surrounding", {}).get(self.pos, [])
-        if any(
-            isinstance(obj, wasteAgent)
-            and getattr(obj, "waste_id", None) == self.assigned_waste_id
-            and self.can_add_waste_type(obj.waste_type)
-            for obj in current_contents
-        ):
-            return "pick_up"
-
-        for pos, entries in self.waste_entries_map.items():
-            if any(wid == self.assigned_waste_id for _, wid in entries):
-                self.assigned_waste_pos = pos
-                action = self._move_toward(pos)
-                if action:
-                    return action
-
-        # Assignment appears stale: release it to avoid deadlocks.
-        self.assigned_waste_id = None
-        self.assigned_waste_pos = None
-        return None
- 
     # ==================
     # Deliberation for yellow agents (priority to answer communication)
     # ==================
@@ -629,7 +683,8 @@ class yellowAgent(baseAgent):
         send_action = self._send_if_pending_action()
         if send_action:
             return send_action
-
+        
+        # ======= HANDLING ASSIGNED MISSION ======
         # If the assigned waste has been picked up, assignment is fulfilled.
         if self.assigned_waste_id is not None and any(
             getattr(waste, "waste_id", None) == self.assigned_waste_id for waste in self.inventory
@@ -637,126 +692,59 @@ class yellowAgent(baseAgent):
             self.assigned_waste_id = None
             self.assigned_waste_pos = None
 
-        # If yellow was picked up via carry_query, release the requester assignment.
-        if self.assigned_requester_id is not None and any(
-            waste.waste_type == "yellow" for waste in self.inventory
-        ):
-            self.assigned_requester_id = None
-
+        # Résolution des missions d'assignation
         assigned_action = self._resolve_assigned_waste_action()
         if assigned_action:
             return assigned_action
         
-        timeout_action = self._timeout_drop_action()
+        # ===== LIVRAISON VERT =====
+        # Gestion du cas où on doit livrer un déchet vert à la fronière et qu'on effectue les échanges de communication sur la delivery 
+        if "green" in inv_types or getattr(self, "step_last_query", -10) == self.current_step - 2 :
+            return self._deliver(target_x = self._eastern_border_x(), performative="carry_query_empty", receiving_group="red", waste_type="green")
+        
+        # ===== LIVRAISON JAUNE =====
+        # Gestion du cas où on doit livrer un déchet jaune à la frontière parce qu'on a atteint le timeout
+        timeout_action = self._timeout_drop_action(target_x=self._eastern_border_x(), performative="carry_query_empty", receiving_group ="red", waste_type="yellow")
         if timeout_action:
             return timeout_action
 
-        frontier_x = self.model.z1[2] - 1
-        current_contents = self.percepts.get("surrounding", {}).get(self.pos, [])
-
-        # Priority pickup on incoming frontier (handoff area).
-        if self.pos[0] == frontier_x:
-            if any(
-                isinstance(o, wasteAgent) and self.can_add_waste_type(o.waste_type)
-                for o in current_contents
-            ):
-                if len(self.inventory) == 0:
-                    self.direct_handoff_mode = True
-                    return "pick_up"
-
-        # If a frontier waste is known, go to it before normal exploration.
-        if not self.inventory:
-            frontier_targets = (
-                self._known_targets_on_frontier("green", frontier_x)
-                + self._known_targets_on_frontier("yellow", frontier_x)
-            )
-            if frontier_targets:
-                closest = min(frontier_targets, key=lambda p: manhattan(self.pos, p))
-                action = self._move_toward(closest)
-                if action:
-                    return action
-
-        # Yellow uses direct handoff only when carrying green: deliver to Z2 east border.
-        if any(w == "green" for w in inv_types):
-            self.direct_handoff_mode = True
-            target_x = self.model.z2[2] - 1
-            if self.pos[0] == target_x:
-                return "drop"
-            action = self._move_toward((target_x, self.pos[1]))
-            return action or self._explore_action()
-        self.direct_handoff_mode = False
- 
+        # ===== LIVRAISON ROUGE =====
+        # Gestion du cas où on doit livrer un déchet jaune à la fronière et qu'on effectue les échanges de communication sur la delivery 
+        if "red" in inv_types or getattr(self, "step_last_query", -10) == self.current_step - 2 :
+            return self._deliver(target_x = self._eastern_border_x(), performative="carry_query_empty", receiving_group="red", waste_type="red")
+        
         # 1. Transform if full of yellow
-        if inv_types.count("yellow") >= 2:
+        if inv_types.count("yellow") == 2:
             return "transform"
- 
-        # 2. Deliver red waste to border of Z2
-        if "red" in inv_types:
-            target_x = self.model.z2[2] - 1
-            if self.pos[0] == target_x:
-                return "drop"
-            
-            target = (target_x, self.pos[1])
-            action = self._move_toward(target)
-            return action or self._explore_action()
- 
-        # 3. Pick up yellow/green waste under yellow constraints
+  
+        # 3. Pick up yellow/green waste if here under yellow constraints
         current_contents = self.percepts.get("surrounding", {}).get(self.pos, [])
-        if any(
-            isinstance(o, wasteAgent) and self.can_add_waste_type(o.waste_type)
-            for o in current_contents
-        ):
-            return "pick_up"
+        if self.current_step >= getattr(self, "blocked_from_pickup_until", -1):  # ← Check
+            if any(isinstance(o, wasteAgent) and self._can_add_waste_type(o.waste_type, o.waste_id, o.pos) for o in current_contents):
+                return "pick_up"
  
         # 4. Move to known reachable yellow/green waste
-        right_border_x = self.model.z2[2] - 1
         yellow_targets = [
             p for p, entries in self.waste_entries_map.items()
             if self.model.is_position_allowed(self, p)
-            and any(
-                (
-                    wt == "green"
-                    and p[0] == frontier_x
-                    and len(self.inventory) == 0
-                    and self._is_waste_id_allowed(wid)
-                )
-                or (
-                    wt == "yellow"
-                    and not (p[0] == right_border_x and "yellow" not in inv_types)
-                    and self._is_waste_id_allowed(wid)
-                )
-                for wt, wid in entries
-            )
-        ]
+            and any(self._can_add_waste_type(wt, wid, p) for wt, wid in entries)
+            ]
+            
         if yellow_targets:
             closest = min(yellow_targets, key=lambda p: manhattan(self.pos, p))
             if closest == self.pos:
-                return "pick_up"
+                 if self.current_step >= getattr(self, "blocked_from_pickup_until", -1):
+                    return "pick_up"
             action = self._move_toward(closest)
             return action or self._explore_action()
         
-        # 5. Scout: Mix between patrolling the drop zone (handoffs) and exploring the zone (initial waste)
+        # Otherwise randomly explore not forgetting the surrounding perception which limits the boundaries
         if self.scout_target is None or self.pos == self.scout_target:
-            # 50% chance to check the border, 50% chance to explore deep into Z2
-            if random.random() < 0.2:
-                # Patrol the border (Z1 East Border)
-                scout_x = self.model.z1[2] - 1
-                current_y = self.pos[1]
-                h = self.model.grid.height
-                if current_y > h // 2:
-                    new_y = random.randint(0, h // 3)
-                else:
-                    new_y = random.randint(2 * h // 3, h - 1)
-                self.scout_target = (scout_x, new_y)
-            else:
-                # Explore Z2 for initial waste
-                # Pick a random point in Z2
-                x_min, y_min, x_max, y_max = self.model.z2
-                # Ensure we pick a valid x inside Z2 (x_max is exclusive in range, but grid is 0-indexed)
-                rand_x = random.randint(x_min, x_max - 1)
-                rand_y = random.randint(y_min, y_max - 1)
-                self.scout_target = (rand_x, rand_y)
-             
+            x_min, y_min, x_max, y_max = self.model.z2
+            rand_x = random.randint(x_min, x_max - 2)
+            rand_y = random.randint(y_min, y_max - 2)
+            self.scout_target = (rand_x, rand_y)
+            
         action = self._move_toward(self.scout_target)
         return action or self._explore_action()
 
@@ -777,13 +765,6 @@ class redAgent(baseAgent):
     # ==================
     # Disposal zone discovery and communication
     # ==================
-    
-    def _handle_message(self, message):
-        if message.performative != "disposal_found":
-            return
-        position = message.content.get("position")
-        if isinstance(position, tuple) and len(position) == 2:
-            self.known_disposal_zone = position
 
     def _discover_disposal_zone(self):
         for pos, contents in self.percepts.get("surrounding", {}).items():
@@ -823,25 +804,6 @@ class redAgent(baseAgent):
         return None
     
     # ==================
-    # Red agent verificiation methods
-    # ==================
-
-    def can_pick_waste_type(self, waste_type):
-        return waste_type in {"green", "yellow", "red"}
-
-    def can_add_waste_type(self, waste_type):
-        if len(self.inventory) >= self.max_capacity:
-            return False
-
-        right_border_x = self.model.z2[2] - 1
-        if waste_type in {"green", "yellow"}:
-            # Red can pick green/yellow only on Z2/Z3 frontier.
-            return self.pos[0] == right_border_x
-        if waste_type == "red":
-            return True
-        return False
-    
-    # ==================
     # Red agent main deliberation method
     # ==================
  
@@ -854,101 +816,164 @@ class redAgent(baseAgent):
                 content={"position": self.known_disposal_zone},
             )
 
+        # Strict priority : search for disposal 
+        if self.known_disposal_zone is None:
+            return self._initial_disposal_search_action()
+        
+        # Strict priority: if a response is queued, sending it consumes this turn.
         send_action = self._send_if_pending_action()
         if send_action:
             return send_action
 
-        if self.known_disposal_zone is None:
-            return self._initial_disposal_search_action()
+        # ======= HANDLING ASSIGNED MISSION ======
+        # If the assigned waste has been picked up, assignment is fulfilled.
+        if self.assigned_waste_id is not None and any(
+            getattr(waste, "waste_id", None) == self.assigned_waste_id for waste in self.inventory
+        ):
+            self.assigned_waste_id = None
+            self.assigned_waste_pos = None
 
-        inv_types = [w.waste_type for w in self.inventory]
-
-        # Red direct-handoff mode is mandatory for any carried waste.
+        # Résolution des missions d'assignation
+        assigned_action = self._resolve_assigned_waste_action()
+        if assigned_action:
+            return assigned_action
+        
+        # ====== Put in disposal if carrying ANY waste ======
         if self.inventory:
-            self.direct_handoff_mode = True
             target = self.known_disposal_zone
             if self.pos == target:
                 return "drop"
             action = self._move_toward(target)
             return action or self._explore_action()
-        self.direct_handoff_mode = False
-
-        frontier_x = self.model.z2[2] - 1
-        current_contents = self.percepts.get("surrounding", {}).get(self.pos, [])
         
-        # Priority pickup on incoming frontier, then direct transport to disposal.
-        if self.pos[0] == frontier_x:
-            if any(
-                isinstance(o, wasteAgent) and self.can_add_waste_type(o.waste_type)
-                for o in current_contents
-            ):
-                if len(self.inventory) == 0 :
-                    self.direct_handoff_mode = True
-                    return "pick_up"
 
-        if not self.inventory:
-            frontier_targets = (
-                self._known_targets_on_frontier("red", frontier_x)
-                + self._known_targets_on_frontier("yellow", frontier_x)
-                + self._known_targets_on_frontier("green", frontier_x)
-            )
-            if frontier_targets:
-                closest = min(frontier_targets, key=lambda p: manhattan(self.pos, p))
-                action = self._move_toward(closest)
-                if action:
-                    return action
- 
-        # 2. Pick up red waste if here
+        # 3. Pick up red/yellow/green waste if here under red constraints
         current_contents = self.percepts.get("surrounding", {}).get(self.pos, [])
-        if any(
-            isinstance(o, wasteAgent) and self.can_add_waste_type(o.waste_type)
-            for o in current_contents
-        ):
-            return "pick_up"
+        if self.current_step >= getattr(self, "blocked_from_pickup_until", -1):  # ← Check
+            if any(isinstance(o, wasteAgent) and self._can_add_waste_type(o.waste_type, o.waste_id, o.pos) for o in current_contents):
+                return "pick_up"
         
-        # 3. Move to known reachable waste (red anywhere, green/yellow on Z2/Z3 frontier only)
+        # 4. Move to known reachable waste
         red_targets = [
             p for p, entries in self.waste_entries_map.items()
             if self.model.is_position_allowed(self, p)
-            and any(
-                (
-                    wt == "red"
-                    and self._is_waste_id_allowed(wid)
-                )
-                or (
-                    wt in {"green", "yellow"}
-                    and p[0] == frontier_x
-                    and self._is_waste_id_allowed(wid)
-                )
-                for wt, wid in entries
-            )
-        ]
+            and any(self._can_add_waste_type(wt, wid, p) for wt, wid in entries)
+            ]
+        
         if red_targets:
             closest = min(red_targets, key=lambda p: manhattan(self.pos, p))
             if closest == self.pos:
-                return "pick_up"
+                 if self.current_step >= getattr(self, "blocked_from_pickup_until", -1):
+                    return "pick_up"
             action = self._move_toward(closest)
             return action or self._explore_action()
-            
-        # 4. Scout: Mix between patrolling the drop zone (handoffs) and exploring the zone (initial waste)
+        
+        # Otherwise randomly explore not forgetting the surrounding perception which limits the boundaries
         if self.scout_target is None or self.pos == self.scout_target:
-            # 50% chance to check the border, 50% chance to explore deep into Z3
-            if random.random() < 0.5:
-                # Patrol the border (Z2 East Border)
-                scout_x = self.model.z2[2] - 1
-                current_y = self.pos[1]
-                h = self.model.grid.height
-                if current_y > h // 2:
-                    new_y = random.randint(0, h // 3)
-                else:
-                    new_y = random.randint(2 * h // 3, h - 1)
-                self.scout_target = (scout_x, new_y)
-            else:
-                # Explore Z3 for initial waste
-                x_min, y_min, x_max, y_max = self.model.z3
-                rand_x = random.randint(x_min, x_max - 1)
-                rand_y = random.randint(y_min, y_max - 1)
-                self.scout_target = (rand_x, rand_y)
-             
+            x_min, y_min, x_max, y_max = self.model.z3
+            rand_x = random.randint(x_min, x_max - 2)
+            rand_y = random.randint(y_min, y_max - 2)
+            self.scout_target = (rand_x, rand_y)
+            
         action = self._move_toward(self.scout_target)
         return action or self._explore_action()
+        
+        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        # # Priority pickup on incoming frontier, then direct transport to disposal.
+        # if self.pos[0] == frontier_x:
+        #     if any(
+        #         isinstance(o, wasteAgent) and self._can_add_waste_type(o.waste_type)
+        #         for o in current_contents
+        #     ):
+        #         if len(self.inventory) == 0 :
+                    
+        #             return "pick_up"
+
+        # if not self.inventory:
+        #     frontier_targets = (
+        #         self._known_targets_on_frontier("red", frontier_x)
+        #         + self._known_targets_on_frontier("yellow", frontier_x)
+        #         + self._known_targets_on_frontier("green", frontier_x)
+        #     )
+        #     if frontier_targets:
+        #         closest = min(frontier_targets, key=lambda p: manhattan(self.pos, p))
+        #         action = self._move_toward(closest)
+        #         if action:
+        #             return action
+ 
+        # # 2. Pick up red waste if here
+        # current_contents = self.percepts.get("surrounding", {}).get(self.pos, [])
+        # if any(
+        #     isinstance(o, wasteAgent) and self._can_add_waste_type(o.waste_type, o.waste_id, o.pos)
+        #     for o in current_contents
+        # ):
+        #     return "pick_up"
+        
+        # # 3. Move to known reachable waste (red anywhere, green/yellow on Z2/Z3 frontier only)
+        # red_targets = [
+        #     p for p, entries in self.waste_entries_map.items()
+        #     if self.model.is_position_allowed(self, p)
+        #     and any(
+        #         (
+        #             wt == "red"
+        #             and self._can_add_waste_type(wt, wid, p)
+        #         )
+        #         or (
+        #             wt in {"green", "yellow"}
+        #             and p[0] == frontier_x
+        #             and self._can_add_waste_type(wt, wid, p)
+        #         )
+        #         for wt, wid in entries
+        #     )
+        # ]
+        # if red_targets:
+        #     closest = min(red_targets, key=lambda p: manhattan(self.pos, p))
+        #     if closest == self.pos:
+        #         return "pick_up"
+        #     action = self._move_toward(closest)
+        #     return action or self._explore_action()
+            
+        # # 4. Scout: Mix between patrolling the drop zone (handoffs) and exploring the zone (initial waste)
+        # if self.scout_target is None or self.pos == self.scout_target:
+        #     # 50% chance to check the border, 50% chance to explore deep into Z3
+        #     if random.random() < 0.5:
+        #         # Patrol the border (Z2 East Border)
+        #         scout_x = self.model.z2[2] - 1
+        #         current_y = self.pos[1]
+        #         h = self.model.grid.height
+        #         if current_y > h // 2:
+        #             new_y = random.randint(0, h // 3)
+        #         else:
+        #             new_y = random.randint(2 * h // 3, h - 1)
+        #         self.scout_target = (scout_x, new_y)
+        #     else:
+        #         # Explore Z3 for initial waste
+        #         x_min, y_min, x_max, y_max = self.model.z3
+        #         rand_x = random.randint(x_min, x_max - 1)
+        #         rand_y = random.randint(y_min, y_max - 1)
+        #         self.scout_target = (rand_x, rand_y)
+             
+        # action = self._move_toward(self.scout_target)
+        # return action or self._explore_action()
+        
+        # 

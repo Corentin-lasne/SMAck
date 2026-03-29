@@ -96,6 +96,44 @@ def _assigned_waste_owners(model):
     return owners
 
 
+def _agent_locked_ids(robot):
+    """Return sorted locked waste ids for one robot."""
+    raw_ids = getattr(robot, "locked_waste_ids", set())
+    cleaned = [wid for wid in raw_ids if wid is not None]
+    try:
+        return sorted(cleaned)
+    except TypeError:
+        # Fallback when ids are mixed types in some branches.
+        return sorted(cleaned, key=lambda v: str(v))
+
+
+def _format_id_list(values, max_items=4):
+    """Format a list of ids as a short, readable string."""
+    if not values:
+        return "-"
+    shown = values[:max_items]
+    text = ",".join(str(v) for v in shown)
+    if len(values) > max_items:
+        text = f"{text},+{len(values) - max_items}"
+    return text
+
+
+def _lock_panel_text(model):
+    """Build compact per-agent lock summary shown next to the grid."""
+    rows = []
+    robots = sorted(
+        model.robotAgents,
+        key=lambda r: getattr(r, "agent_id", getattr(r, "unique_id", 0)),
+    )
+    for robot in robots:
+        agent_id = getattr(robot, "agent_id", getattr(robot, "unique_id", None))
+        locked_ids = _agent_locked_ids(robot)
+        rows.append(f"A{agent_id:>2} | L{len(locked_ids):>2} | {_format_id_list(locked_ids, max_items=10)}")
+    if not rows:
+        return "Locked Waste by Agent\n(none)"
+    return "Locked Waste by Agent\n" + "\n".join(rows)
+
+
 @solara.component
 def SpaceGraph(model):
     """Render the grid with clear zone background, cell borders, and readable overlays."""
@@ -104,11 +142,12 @@ def SpaceGraph(model):
 
     fig = Figure(
         figsize=(
-            max(8, min(16, width * 0.38)),
+            max(10, min(20, width * 0.48)),
             max(6, min(14, height * 0.38)),
         )
     )
     ax = fig.subplots()
+    fig.subplots_adjust(right=0.78, top=0.84)
     ax.set_facecolor("#f8f9fa")
     lock_table = _assigned_waste_owners(model)
 
@@ -182,7 +221,7 @@ def SpaceGraph(model):
                     x + dx + 0.08,
                     y + dy + 0.08,
                     waste_label,
-                    fontsize=6,
+                    fontsize=8,
                     color="#111827",
                     zorder=5,
                 )
@@ -192,6 +231,7 @@ def SpaceGraph(model):
                 role = _robot_role(robot)
                 carried = _carried_waste_type(robot)
                 assigned_waste_id = getattr(robot, "assigned_waste_id", None)
+                lock_count = len(_agent_locked_ids(robot))
                 agent_id = getattr(robot, "agent_id", robot.unique_id)
                 edge_color = WASTE_COLORS[carried] if carried else "#ffffff"
                 edge_width = 2.6 if carried else 1.2
@@ -210,7 +250,7 @@ def SpaceGraph(model):
                     x,
                     y - 0.28,
                     f"A{agent_id} | W{assigned_waste_id}" if assigned_waste_id is not None else f"A{agent_id}",
-                    fontsize=6,
+                    fontsize=8,
                     color="#111827",
                     ha="center",
                     va="top",
@@ -230,6 +270,29 @@ def SpaceGraph(model):
                         zorder=7,
                     )
 
+                # Lock badge: count of currently locked waste ids for this robot.
+                if lock_count > 0:
+                    ax.scatter(
+                        [x - 0.22],
+                        [y + 0.22],
+                        marker="o",
+                        s=55,
+                        c="#111827",
+                        edgecolors="white",
+                        linewidths=0.8,
+                        zorder=7,
+                    )
+                    ax.text(
+                        x - 0.22,
+                        y + 0.22,
+                        str(lock_count),
+                        fontsize=8.5,
+                        color="white",
+                        ha="center",
+                        va="center",
+                        zorder=8,
+                    )
+
     ax.set_xlim(-0.5, width - 0.5)
     ax.set_ylim(-0.5, height - 0.5)
     ax.set_aspect("equal")
@@ -241,7 +304,21 @@ def SpaceGraph(model):
 
     ax.set_xticks(range(0, width, max(1, width // 10)))
     ax.set_yticks(range(0, height, max(1, height // 10)))
-    ax.tick_params(axis="both", labelsize=8, colors="#111827")
+    ax.tick_params(axis="both", labelsize=9, colors="#111827")
+
+    # Side panel keeps lock ids readable without overloading on-grid labels.
+    ax.text(
+        1.01,
+        0.98,
+        _lock_panel_text(model),
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=8,
+        family="monospace",
+        color="#111827",
+        bbox={"boxstyle": "round,pad=0.35", "facecolor": "#f1f5f9", "edgecolor": "#94a3b8", "alpha": 0.95},
+    )
 
     legend_handles = [
         Patch(facecolor=ZONE_COLORS["z1"], edgecolor="none", label="Zone 1"),
@@ -254,19 +331,21 @@ def SpaceGraph(model):
         Line2D([0], [0], marker="o", markersize=7, color="w", markerfacecolor=WASTE_COLORS["yellow"], markeredgecolor="#111827", label="Yellow waste"),
         Line2D([0], [0], marker="o", markersize=7, color="w", markerfacecolor=WASTE_COLORS["red"], markeredgecolor="#111827", label="Red waste"),
         Line2D([0], [0], marker="s", markersize=8, color="w", markerfacecolor="#9ca3af", markeredgecolor=WASTE_COLORS["green"], markeredgewidth=2, label="Carrying waste"),
+        Line2D([0], [0], marker="o", markersize=7, color="w", markerfacecolor="#111827", markeredgecolor="white", label="Lock count badge"),
         Line2D([0], [0], color="none", label="Waste label: id [Agent_id]"),
         Line2D([0], [0], color="none", label="Robot label: A<agent_id> | W<assigned_waste_id>"),
+        Line2D([0], [0], color="none", label="Side panel: A<id> | L<count> | lock ids"),
     ]
     ax.legend(
         handles=legend_handles,
         loc="upper center",
         bbox_to_anchor=(0.5, 1.12),
         ncol=5,
-        fontsize=7,
+        fontsize=8,
         frameon=True,
     )
 
-    ax.set_title("Grid State", fontsize=11, color="#111827")
+    ax.set_title("Grid State", fontsize=12, color="#111827")
     solara.FigureMatplotlib(fig)
 
 @solara.component
@@ -288,11 +367,12 @@ def WasteCountPlot(model):
         ax.plot(steps, red, label="Red", color="#A80303", linewidth=2)
         ax.plot(steps, total, label="Total", color="black", linewidth=2, linestyle="--")
         
-        ax.set_xlabel("Step")
-        ax.set_ylabel("Number of Waste")
-        ax.set_title("Waste Count Over Time")
-        ax.legend()
+        ax.set_xlabel("Step", fontsize=11)
+        ax.set_ylabel("Number of Waste", fontsize=11)
+        ax.set_title("Waste Count Over Time", fontsize=12)
+        ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3)
+        ax.tick_params(axis="both", labelsize=10)
     
     solara.FigureMatplotlib(fig)
 
@@ -309,11 +389,12 @@ def CumulativeDistancePlot(model):
         
         ax.plot(steps, distances, label="Cumulative Distance", color="#5f3dc4", linewidth=2)
         
-        ax.set_xlabel("Step")
-        ax.set_ylabel("Cumulative Distance (Manhattan)")
-        ax.set_title("Cumulative Distance of Waste to Disposal Zone")
-        ax.legend()
+        ax.set_xlabel("Step", fontsize=11)
+        ax.set_ylabel("Cumulative Distance (Manhattan)", fontsize=11)
+        ax.set_title("Cumulative Distance of Waste to Disposal Zone", fontsize=12)
+        ax.legend(fontsize=12)
         ax.grid(True, alpha=0.3)
+        ax.tick_params(axis="both", labelsize=10)
     
     solara.FigureMatplotlib(fig)
 
