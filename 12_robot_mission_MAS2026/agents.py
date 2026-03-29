@@ -62,9 +62,6 @@ class baseAgent(Agent):
         self.carry_response_query_id = None
         self.blocked_from_pickup_until = -1
         self.carry_response_lock_until = -1
-        self.pending_handoff_waste_id = None
-        self.pending_handoff_waste_pos = None
-        self.assigned_stale_steps = 0
 
 
     def step(self):
@@ -367,23 +364,23 @@ class baseAgent(Agent):
             self.carry_response_lock_until = self.current_step + 2
 
     # Envoie un message direct au robot sélectionné pour lui donner les détails de la livraison
-    def _queue_detail_delivery(self, recipient_id, waste_id, waste_pos):
+    def _queue_detail_delivery(self, recipient_id):
         self._queue_direct_message(
             recipient_id=recipient_id,
             performative="delivery_details",
             content={
-                "waste_id": waste_id,
-                "waste_pos": waste_pos,
+                "waste_id": self.waste_id_map.get(self.pos),
+                "waste_pos": self.pos,
             },
         )
 
     # Envoie un message direct à tous les robots que le waste a été prise (lock) et qu'ils ne doivent pas la prendre (même à celui qui a été sélectionné car dans sas gestion des messages il pourra ignorer le lock)
-    def _queue_lock_delivery(self, receiving_group, waste_id):
+    def _queue_lock_delivery(self, receiving_group):
         self._queue_broadcast_to_color(
             color=receiving_group,
             performative="lock_delivery",
             content={
-                "waste_id": waste_id,
+                "waste_id": self.waste_id_map.get(self.pos),
             },
         )
 
@@ -404,9 +401,6 @@ class baseAgent(Agent):
                     and candidate_waste_id is not None
                     and getattr(self, "query_sent_for_batch", None) == candidate_waste_id
                 ):
-                    # Keep explicit handoff context so detail/lock target the exact dropped waste.
-                    self.pending_handoff_waste_id = candidate_waste_id
-                    self.pending_handoff_waste_pos = self.pos
                     return "drop"
             
             # Second tempo après le drop, all the answers should have had arrived
@@ -416,16 +410,10 @@ class baseAgent(Agent):
                 candidates = self.id_and_position_carrier_response.get(current_query_id, [])
                 if candidates:
                     closest = min(candidates, key=lambda c: manhattan(self.pos, c[1]))
-                    handoff_waste_id = self.pending_handoff_waste_id
-                    handoff_waste_pos = self.pending_handoff_waste_pos
-                    if handoff_waste_id is None:
-                        handoff_waste_id = self._delivery_candidate_waste_id()
-                    if handoff_waste_pos is None:
-                        handoff_waste_pos = self.pos
                     # Ajouter dans les pendings messages un message direct à ce jaune pour lui donner les détails de la livraison (id de la waste à prendre, etc.)
-                    self._queue_detail_delivery(recipient_id=closest[0], waste_id=handoff_waste_id, waste_pos=handoff_waste_pos)
+                    self._queue_detail_delivery(recipient_id=closest[0])
                     # Envoyer un lock à tous les autres jaunes pour ne pas qu'ils le prennent
-                    self._queue_lock_delivery(receiving_group=receiving_group, waste_id=handoff_waste_id)
+                    self._queue_lock_delivery(receiving_group=receiving_group)
 
                     if current_query_id in self.id_and_position_carrier_response:
                         del self.id_and_position_carrier_response[current_query_id]
@@ -433,8 +421,6 @@ class baseAgent(Agent):
                     self.id_last_query = None
                     self.step_last_query = None
                     self.query_sent_for_batch = None
-                    self.pending_handoff_waste_id = None
-                    self.pending_handoff_waste_pos = None
                     return "send_message"
 
                 # No carry_response received: allow drop-out, but never emit lock.
@@ -443,8 +429,6 @@ class baseAgent(Agent):
                 self.id_last_query = None
                 self.step_last_query = None
                 self.query_sent_for_batch = None
-                self.pending_handoff_waste_id = None
-                self.pending_handoff_waste_pos = None
             
             
                 
@@ -484,7 +468,6 @@ class baseAgent(Agent):
             waste_pos = message.content.get("waste_pos")
             self.assigned_waste_id = waste_id
             self.assigned_waste_pos = waste_pos
-            self.assigned_stale_steps = 0
             self.locked_waste_ids.discard(waste_id)  # Bien que l'ordre des messages soit théoriquement bon, le scheduler peut créer des problèmes de dépouillement
             return
                                             
@@ -509,10 +492,6 @@ class baseAgent(Agent):
         
     def _resolve_assigned_waste_action(self):
         """Assigned pickup has priority over normal behavior. Handle both waste and requester assignments."""
-        if self.assigned_waste_id is None:
-            self.assigned_stale_steps = 0
-            return None
-
         # Handle carry_request assignment: navigate to waste and pick it up (classic case)
         if self.assigned_waste_pos is not None:
             action = self._move_toward(self.assigned_waste_pos)
@@ -521,41 +500,23 @@ class baseAgent(Agent):
 
         current_contents = self.percepts.get("surrounding", {}).get(self.pos, [])
         # Gestion du cas où l'objet dont l'id a été assigné est présent
-        assigned_here_and_pickable = any(
-            isinstance(obj, wasteAgent)
-            and getattr(obj, "waste_id", None) == self.assigned_waste_id
-            and self._can_add_waste_type(obj.waste_type, obj.waste_id, obj.pos)
+        if any(
+            isinstance(obj, wasteAgent) and self._can_add_waste_type(obj.waste_type, obj.waste_id, obj.pos)
             for obj in current_contents
-        )
-        if assigned_here_and_pickable:
+        ):
+            # Assignment appears stale: release it to avoid deadlocks.
             if self.current_step >= getattr(self, "blocked_from_pickup_until", -1):
-                self.assigned_stale_steps = 0
                 self.assigned_waste_id = None
                 self.assigned_waste_pos = None
                 return "pick_up"
-            return None
 
-        # Re-localize assigned waste from known map when not at the expected position.
-        reassigned_pos = None
-        for pos, entries in self.waste_entries_map.items():
-            if any(wid == self.assigned_waste_id for _, wid in entries):
-                reassigned_pos = pos
-                break
-
-        if reassigned_pos is not None:
-            self.assigned_stale_steps = 0
-            self.assigned_waste_pos = reassigned_pos
-            action = self._move_toward(reassigned_pos)
-            if action:
-                return action
-            return None
-
-        # If assignment cannot be found for several steps, release it to avoid permanent deadlock.
-        self.assigned_stale_steps += 1
-        if self.assigned_stale_steps >= 8:
-            self.assigned_waste_id = None
-            self.assigned_waste_pos = None
-            self.assigned_stale_steps = 0
+        # # S'attribue un nouveau waste si l'ancien non présent
+        # for pos, entries in self.waste_entries_map.items():
+        #     if any(wid == self.assigned_waste_id for _, wid in entries):
+        #         self.assigned_waste_pos = pos
+        #         action = self._move_toward(pos)
+        #         if action:
+        #             return action
         return None
 
     # ==================
