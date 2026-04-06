@@ -16,7 +16,7 @@ from messaging import Message, Mailbox
 
 class Model(Model):
     """A model with some number of agents, number of waste, and a grid cell."""
-    def __init__(self, n_green_agents=1, n_yellow_agents=1, n_red_agents=1, n_green_waste=1, n_yellow_waste=0, n_red_waste=0, width=10, height=10, seed=None, policy_profile_green=DEFAULT_MODEL_PARAMS["policy_profile_green"], policy_profile_yellow=DEFAULT_MODEL_PARAMS["policy_profile_yellow"], policy_profile_red=DEFAULT_MODEL_PARAMS["policy_profile_red"]):
+    def __init__(self, n_green_agents=1, n_yellow_agents=1, n_red_agents=1, n_green_waste=1, n_yellow_waste=0, n_red_waste=0, width=10, height=10, seed=None, exploration_share_interval_steps=DEFAULT_MODEL_PARAMS["exploration_share_interval_steps"], policy_profile_green=DEFAULT_MODEL_PARAMS["policy_profile_green"], policy_profile_yellow=DEFAULT_MODEL_PARAMS["policy_profile_yellow"], policy_profile_red=DEFAULT_MODEL_PARAMS["policy_profile_red"]):
         """Initialize the model.
 
         Args:
@@ -37,6 +37,7 @@ class Model(Model):
         self.num_green_waste = n_green_waste
         self.num_yellow_waste = n_yellow_waste
         self.num_red_waste = n_red_waste
+        self.exploration_share_interval_steps = exploration_share_interval_steps
         self.policy_profile_green = policy_profile_green
         self.policy_profile_yellow = policy_profile_yellow
         self.policy_profile_red = policy_profile_red

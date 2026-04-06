@@ -366,6 +366,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--red-waste", default=str(DEFAULT_MODEL_PARAMS["n_red_waste"]), help="Comma-separated values")
     parser.add_argument("--width", default=str(DEFAULT_MODEL_PARAMS["width"]), help="Comma-separated values")
     parser.add_argument("--height", default=str(DEFAULT_MODEL_PARAMS["height"]), help="Comma-separated values")
+    parser.add_argument("--exploration-share-interval-steps", default=str(DEFAULT_MODEL_PARAMS["exploration_share_interval_steps"]), help="Comma-separated values")
     parser.add_argument("--iterations", type=int, default=20)
     parser.add_argument("--max-steps", type=int, default=1000)
     parser.add_argument("--number-processes", type=int, default=1)
@@ -395,6 +396,7 @@ def main() -> None:
         "n_red_waste": parse_int_list(args.red_waste),
         "width": parse_int_list(args.width),
         "height": parse_int_list(args.height),
+        "exploration_share_interval_steps": parse_int_list(args.exploration_share_interval_steps),
         "policy_profile_green": parse_str_list(args.policy_profile_green),
         "policy_profile_yellow": parse_str_list(args.policy_profile_yellow),
         "policy_profile_red": parse_str_list(args.policy_profile_red),

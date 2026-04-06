@@ -54,7 +54,7 @@ class baseAgent(Agent):
         self.smart_exploration_enabled = False
         self.interval_explored_positions = set()
         self.shared_explored_core_positions = set()
-        self.last_exploration_share_step = 30
+        self.last_exploration_share_step = self.model.exploration_share_interval_steps
         
         self.known_disposal_zone = None
         
@@ -499,7 +499,7 @@ class baseAgent(Agent):
         action = self._move_toward((target_x, self.pos[1]))
         return action or self._explore_action()
    
-    def _queue_exploration_share_to_color(self, interval_steps=30):
+    def _queue_exploration_share_to_color(self, interval_steps):
         if self.current_step - self.last_exploration_share_step < interval_steps:
             return False
 
@@ -519,7 +519,7 @@ class baseAgent(Agent):
         self.interval_explored_positions.clear()
         return True
     
-    def queue_exploration_share_if_due(self, interval_steps=30):
+    def queue_exploration_share_if_due(self, interval_steps):
         if not self.smart_exploration_enabled:
             return None
         if self._queue_exploration_share_to_color(interval_steps=interval_steps):

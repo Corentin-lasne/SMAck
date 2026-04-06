@@ -510,6 +510,14 @@ model_params = {
         "max": 50,
         "step": 1,
     },
+    "exploration_share_interval_steps": {
+        "type": "SliderInt",
+        "value": DEFAULT_MODEL_PARAMS["exploration_share_interval_steps"],
+        "label": "Exploration Share Interval (steps):",
+        "min": 1,
+        "max": 100,
+        "step": 1,
+    },
     "policy_profile_green": {
         "type": "Select",
         "value": DEFAULT_MODEL_PARAMS["policy_profile_green"],

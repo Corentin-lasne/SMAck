@@ -22,6 +22,7 @@ DEFAULT_MODEL_PARAMS = {
         "n_red_waste": 13,
         "width": 25,
         "height": 25,
+        "exploration_share_interval_steps": 30,
         "policy_profile_green": DEFAULT_POLICY_PROFILE,
         "policy_profile_yellow": DEFAULT_POLICY_PROFILE,
         "policy_profile_red": DEFAULT_POLICY_PROFILE,
