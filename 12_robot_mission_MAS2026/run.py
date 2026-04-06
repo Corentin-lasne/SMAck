@@ -15,9 +15,37 @@ from mesa.datacollection import DataCollector
 from tqdm import tqdm
 
 from model import Model
+from config import DEFAULT_MODEL_PARAMS
 
 
-def _plot_waste_composition(timeseries_df: pd.DataFrame, out_dir: Path) -> None:
+DISTANCE_STALL_WINDOW = 200
+
+
+def _add_filtered_runs_badge(ax: plt.Axes, filtered_runs: int, total_runs: int) -> None:
+    """Add an annotation above the plot with the number of filtered runs."""
+    if total_runs <= 0:
+        return
+    ax.text(
+        0.5,
+        1.1,
+        (
+            "Filtered out (cumulative_distance stalled "
+            f"{DISTANCE_STALL_WINDOW}+ steps): {filtered_runs}/{total_runs} runs"
+        ),
+        transform=ax.transAxes,
+        ha="center",
+        va="bottom",
+        fontsize=9,
+        bbox={"boxstyle": "round,pad=0.25", "facecolor": "#f2f2f2", "edgecolor": "#999999"},
+    )
+
+
+def _plot_waste_composition(
+    timeseries_df: pd.DataFrame,
+    out_dir: Path,
+    filtered_runs: int,
+    total_runs: int,
+) -> None:
     """Plot waste count over time for all types (green, yellow, red, total)."""
     if timeseries_df.empty:
         return
@@ -71,10 +99,24 @@ def _plot_waste_composition(timeseries_df: pd.DataFrame, out_dir: Path) -> None:
     ax.set_title("Total waste over time (mean with 95% interval) by type")
     ax.set_xlabel("Step")
     ax.set_ylabel("Waste count")
+    _add_filtered_runs_badge(ax, filtered_runs=filtered_runs, total_runs=total_runs)
     ax.legend(fontsize=8, loc="best")
     plt.tight_layout()
     plt.savefig(out_dir / "total_waste_over_time.png", dpi=150)
     plt.close()
+
+
+def _has_stagnation_window(series: pd.Series, window_size: int) -> bool:
+    """Return True if a series contains a flat window of at least window_size steps."""
+    if window_size <= 1:
+        return False
+    values = series.to_numpy()
+    if len(values) < window_size:
+        return False
+    for i in range(0, len(values) - window_size + 1):
+        if values[i] == values[i + window_size - 1] and len(set(values[i : i + window_size])) == 1:
+            return True
+    return False
 
 
 def parse_int_list(value: str) -> list[int]:
@@ -189,7 +231,13 @@ class BatchModel(Model):
         self.datacollector.collect(self)
 
 
-def make_plots(summary_df: pd.DataFrame, timeseries_df: pd.DataFrame, out_dir: Path) -> None:
+def make_plots(
+    summary_df: pd.DataFrame,
+    timeseries_df: pd.DataFrame,
+    out_dir: Path,
+    filtered_runs: int,
+    total_runs: int,
+) -> None:
     sns.set_theme(style="whitegrid")
 
     total_step_effective_col = (
@@ -229,6 +277,7 @@ def make_plots(summary_df: pd.DataFrame, timeseries_df: pd.DataFrame, out_dir: P
         ax.set_title(title)
         ax.set_xlabel("Step")
         ax.set_ylabel(ylabel)
+        _add_filtered_runs_badge(ax, filtered_runs=filtered_runs, total_runs=total_runs)
         ax.legend(title="Configuration")
         plt.tight_layout()
         plt.savefig(out_dir / filename, dpi=150)
@@ -289,7 +338,12 @@ def make_plots(summary_df: pd.DataFrame, timeseries_df: pd.DataFrame, out_dir: P
         plt.savefig(out_dir / "compaction_ratio_distribution.png", dpi=150)
         plt.close()
 
-    _plot_waste_composition(timeseries_df, out_dir)
+    _plot_waste_composition(
+        timeseries_df,
+        out_dir,
+        filtered_runs=filtered_runs,
+        total_runs=total_runs,
+    )
     _plot_metric_with_band(
         metric="cumulative_distance",
         title="Cumulative distance over time (mean with 95% interval)",
@@ -300,14 +354,14 @@ def make_plots(summary_df: pd.DataFrame, timeseries_df: pd.DataFrame, out_dir: P
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Batch runner for robot mission model")
-    parser.add_argument("--green-agents", default="1", help="Comma-separated values")
-    parser.add_argument("--yellow-agents", default="1", help="Comma-separated values")
-    parser.add_argument("--red-agents", default="1", help="Comma-separated values")
-    parser.add_argument("--green-waste", default="10", help="Comma-separated values")
-    parser.add_argument("--yellow-waste", default="0", help="Comma-separated values")
-    parser.add_argument("--red-waste", default="0", help="Comma-separated values")
-    parser.add_argument("--width", default="30", help="Comma-separated values")
-    parser.add_argument("--height", default="30", help="Comma-separated values")
+    parser.add_argument("--green-agents", default=str(DEFAULT_MODEL_PARAMS["n_green_agents"]), help="Comma-separated values")
+    parser.add_argument("--yellow-agents", default=str(DEFAULT_MODEL_PARAMS["n_yellow_agents"]), help="Comma-separated values")
+    parser.add_argument("--red-agents", default=str(DEFAULT_MODEL_PARAMS["n_red_agents"]), help="Comma-separated values")
+    parser.add_argument("--green-waste", default=str(DEFAULT_MODEL_PARAMS["n_green_waste"]), help="Comma-separated values")
+    parser.add_argument("--yellow-waste", default=str(DEFAULT_MODEL_PARAMS["n_yellow_waste"]), help="Comma-separated values")
+    parser.add_argument("--red-waste", default=str(DEFAULT_MODEL_PARAMS["n_red_waste"]), help="Comma-separated values")
+    parser.add_argument("--width", default=str(DEFAULT_MODEL_PARAMS["width"]), help="Comma-separated values")
+    parser.add_argument("--height", default=str(DEFAULT_MODEL_PARAMS["height"]), help="Comma-separated values")
     parser.add_argument("--iterations", type=int, default=20)
     parser.add_argument("--max-steps", type=int, default=1000)
     parser.add_argument("--number-processes", type=int, default=1)
@@ -383,9 +437,24 @@ def main() -> None:
         + ")"
     )
 
+    run_distance_stagnation = (
+        model_rows.sort_values(["RunId", "Step"])
+        .groupby("RunId")["cumulative_distance"]
+        .apply(lambda s: _has_stagnation_window(s, DISTANCE_STALL_WINDOW))
+        .rename("distance_stagnation")
+        .reset_index()
+    )
+    model_rows = model_rows.merge(run_distance_stagnation, on="RunId", how="left")
+    model_rows["distance_stagnation"] = model_rows["distance_stagnation"].fillna(False)
+
+    total_runs = int(model_rows["RunId"].nunique()) if not model_rows.empty else 0
+    filtered_runs = int(run_distance_stagnation["distance_stagnation"].sum()) if not run_distance_stagnation.empty else 0
+
+    usable_rows = model_rows[~model_rows["distance_stagnation"]].copy()
+
     # Summary: last collected row per run.
     summary_df = (
-        model_rows.sort_values(["RunId", "Step"]).groupby("RunId", as_index=False).tail(1).copy()
+        usable_rows.sort_values(["RunId", "Step"]).groupby("RunId", as_index=False).tail(1).copy()
     )
 
     if "seed" not in summary_df.columns:
@@ -436,9 +505,9 @@ def main() -> None:
     else:
         summary_df["stopped_with_waste"] = pd.NA
 
-    if "total" in model_rows.columns and args.stall_window > 0:
+    if "total" in usable_rows.columns and args.stall_window > 0:
         stall_by_run = (
-            model_rows.sort_values(["RunId", "Step"])
+            usable_rows.sort_values(["RunId", "Step"])
             .groupby("RunId")["total"]
             .apply(
                 lambda s: (len(s) >= args.stall_window)
@@ -494,22 +563,37 @@ def main() -> None:
         "cumulative_distance",
     ]
     summary_df = summary_df[[c for c in summary_keep if c in summary_df.columns]]
-    timeseries_df = model_rows.copy()
+    timeseries_df = usable_rows.copy()
 
     summary_path = out_dir / "summary.csv"
     timeseries_path = out_dir / "timeseries.csv"
     suspicious_path = out_dir / "suspicious_runs.csv"
+    filtered_runs_path = out_dir / "filtered_runs_distance_stall.csv"
     summary_df.to_csv(summary_path, index=False)
     timeseries_df.to_csv(timeseries_path, index=False)
+    run_distance_stagnation[run_distance_stagnation["distance_stagnation"]].to_csv(
+        filtered_runs_path,
+        index=False,
+    )
     summary_df[
         summary_df["timed_out"] | summary_df["possible_deadlock"] | summary_df["stopped_with_waste"]
     ].to_csv(suspicious_path, index=False)
 
-    make_plots(summary_df, timeseries_df, out_dir)
+    make_plots(
+        summary_df,
+        timeseries_df,
+        out_dir,
+        filtered_runs=filtered_runs,
+        total_runs=total_runs,
+    )
 
     cleaned_rate = summary_df["cleaned"].mean() if not summary_df.empty else 0.0
     print("\nBatch completed")
     print(f"Output directory: {out_dir}")
+    print(
+        "Runs filtered out due to cumulative_distance stagnation "
+        f"({DISTANCE_STALL_WINDOW}+ steps): {filtered_runs} / {total_runs}"
+    )
     print(f"Cleaned runs: {summary_df['cleaned'].sum()} / {len(summary_df)} ({cleaned_rate:.1%})")
     timeout_count = int(summary_df["timed_out"].sum())
     deadlock_count = int(summary_df["possible_deadlock"].sum())

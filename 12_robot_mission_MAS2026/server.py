@@ -1,4 +1,4 @@
-""" 
+"""
 Group number: 12
 Group members:
     - Tomas Stone
@@ -6,6 +6,7 @@ Group members:
     - Corentin Lasne
 Date of creation : 16/03/2026
 """
+# to start : "solara run server.py"
 
 import mesa
 import solara
@@ -18,6 +19,7 @@ from collections import Counter
 from agents import greenAgent, yellowAgent, redAgent
 from objects import wasteAgent
 from model import Model
+from config import DEFAULT_MODEL_PARAMS
 
 ZONE_COLORS = {
     "z1": "#d9f7be",  # green-tinted
@@ -134,6 +136,26 @@ def _lock_panel_text(model):
     return "Locked Waste by Agent\n" + "\n".join(rows)
 
 
+def _mailbox_panel_text(model):
+    """Build compact mailbox stats (unread/read/pending) per robot agent."""
+    rows = []
+    robots = sorted(
+        model.robotAgents,
+        key=lambda r: getattr(r, "agent_id", getattr(r, "unique_id", 0)),
+    )
+    for robot in robots:
+        agent_id = getattr(robot, "agent_id", getattr(robot, "unique_id", None))
+        mailbox = model.agent_mailboxes.get(agent_id)
+        unread = len(getattr(mailbox, "_unread_messages", [])) if mailbox is not None else 0
+        read = len(getattr(mailbox, "_read_messages", [])) if mailbox is not None else 0
+        pending_out = len(getattr(robot, "pending_messages", []) or [])
+        rows.append(f"A{agent_id:>2} | U{unread:>2} R{read:>3} P{pending_out:>2}")
+
+    if not rows:
+        return "Mailbox by Agent\n(none)"
+    return "Mailbox by Agent\n" + "\n".join(rows)
+
+
 @solara.component
 def SpaceGraph(model):
     """Render the grid with clear zone background, cell borders, and readable overlays."""
@@ -221,7 +243,7 @@ def SpaceGraph(model):
                     x + dx + 0.08,
                     y + dy + 0.08,
                     waste_label,
-                    fontsize=8,
+                    fontsize=10,
                     color="#111827",
                     zorder=5,
                 )
@@ -233,6 +255,9 @@ def SpaceGraph(model):
                 assigned_waste_id = getattr(robot, "assigned_waste_id", None)
                 lock_count = len(_agent_locked_ids(robot))
                 agent_id = getattr(robot, "agent_id", robot.unique_id)
+                sent_step = getattr(robot, "last_message_sent_step", -10)
+                sent_count = getattr(robot, "last_message_sent_count", 0)
+                sent_age = (model.steps - 1) - sent_step
                 edge_color = WASTE_COLORS[carried] if carried else "#ffffff"
                 edge_width = 2.6 if carried else 1.2
 
@@ -246,11 +271,37 @@ def SpaceGraph(model):
                     linewidths=edge_width,
                     zorder=6,
                 )
+
+                # Visual pulse when agent has sent messages recently.
+                if 0 <= sent_age <= 1 and sent_count > 0:
+                    pulse_alpha = 0.8 if sent_age == 0 else 0.45
+                    pulse_size = 360 if sent_age == 0 else 300
+                    ax.scatter(
+                        [x],
+                        [y],
+                        marker="o",
+                        s=pulse_size,
+                        facecolors="none",
+                        edgecolors="#0b7285",
+                        linewidths=2.0,
+                        alpha=pulse_alpha,
+                        zorder=7,
+                    )
+                    ax.text(
+                        x,
+                        y + 0.33,
+                        f"msg:{sent_count}",
+                        fontsize=9,
+                        color="#0b7285",
+                        ha="center",
+                        va="bottom",
+                        zorder=8,
+                    )
                 ax.text(
                     x,
                     y - 0.28,
                     f"A{agent_id} | W{assigned_waste_id}" if assigned_waste_id is not None else f"A{agent_id}",
-                    fontsize=8,
+                    fontsize=10,
                     color="#111827",
                     ha="center",
                     va="top",
@@ -270,29 +321,6 @@ def SpaceGraph(model):
                         zorder=7,
                     )
 
-                # Lock badge: count of currently locked waste ids for this robot.
-                if lock_count > 0:
-                    ax.scatter(
-                        [x - 0.22],
-                        [y + 0.22],
-                        marker="o",
-                        s=55,
-                        c="#111827",
-                        edgecolors="white",
-                        linewidths=0.8,
-                        zorder=7,
-                    )
-                    ax.text(
-                        x - 0.22,
-                        y + 0.22,
-                        str(lock_count),
-                        fontsize=8.5,
-                        color="white",
-                        ha="center",
-                        va="center",
-                        zorder=8,
-                    )
-
     ax.set_xlim(-0.5, width - 0.5)
     ax.set_ylim(-0.5, height - 0.5)
     ax.set_aspect("equal")
@@ -308,33 +336,48 @@ def SpaceGraph(model):
 
     # Side panel keeps lock ids readable without overloading on-grid labels.
     ax.text(
-        1.01,
+        1.02,
         0.98,
         _lock_panel_text(model),
         transform=ax.transAxes,
         ha="left",
         va="top",
-        fontsize=8,
+        fontsize=11,
         family="monospace",
         color="#111827",
         bbox={"boxstyle": "round,pad=0.35", "facecolor": "#f1f5f9", "edgecolor": "#94a3b8", "alpha": 0.95},
+    )
+
+    ax.text(
+        -0.28,
+        0.98,
+        _mailbox_panel_text(model),
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=11,
+        family="monospace",
+        color="#111827",
+        bbox={"boxstyle": "round,pad=0.35", "facecolor": "#ecfeff", "edgecolor": "#67e8f9", "alpha": 0.95},
     )
 
     legend_handles = [
         Patch(facecolor=ZONE_COLORS["z1"], edgecolor="none", label="Zone 1"),
         Patch(facecolor=ZONE_COLORS["z2"], edgecolor="none", label="Zone 2"),
         Patch(facecolor=ZONE_COLORS["z3"], edgecolor="none", label="Zone 3"),
-        Line2D([0], [0], marker="s", markersize=8, color="w", markerfacecolor=ROBOT_COLORS["green"], label="Green agent"),
-        Line2D([0], [0], marker="s", markersize=8, color="w", markerfacecolor=ROBOT_COLORS["yellow"], label="Yellow agent"),
-        Line2D([0], [0], marker="s", markersize=8, color="w", markerfacecolor=ROBOT_COLORS["red"], label="Red agent"),
-        Line2D([0], [0], marker="o", markersize=7, color="w", markerfacecolor=WASTE_COLORS["green"], markeredgecolor="#111827", label="Green waste"),
-        Line2D([0], [0], marker="o", markersize=7, color="w", markerfacecolor=WASTE_COLORS["yellow"], markeredgecolor="#111827", label="Yellow waste"),
-        Line2D([0], [0], marker="o", markersize=7, color="w", markerfacecolor=WASTE_COLORS["red"], markeredgecolor="#111827", label="Red waste"),
-        Line2D([0], [0], marker="s", markersize=8, color="w", markerfacecolor="#9ca3af", markeredgecolor=WASTE_COLORS["green"], markeredgewidth=2, label="Carrying waste"),
-        Line2D([0], [0], marker="o", markersize=7, color="w", markerfacecolor="#111827", markeredgecolor="white", label="Lock count badge"),
+        Line2D([0], [0], marker="s", markersize=10, color="w", markerfacecolor=ROBOT_COLORS["green"], label="Green agent"),
+        Line2D([0], [0], marker="s", markersize=10, color="w", markerfacecolor=ROBOT_COLORS["yellow"], label="Yellow agent"),
+        Line2D([0], [0], marker="s", markersize=10, color="w", markerfacecolor=ROBOT_COLORS["red"], label="Red agent"),
+        Line2D([0], [0], marker="o", markersize=10, color="w", markerfacecolor=WASTE_COLORS["green"], markeredgecolor="#111827", label="Green waste"),
+        Line2D([0], [0], marker="o", markersize=10, color="w", markerfacecolor=WASTE_COLORS["yellow"], markeredgecolor="#111827", label="Yellow waste"),
+        Line2D([0], [0], marker="o", markersize=10, color="w", markerfacecolor=WASTE_COLORS["red"], markeredgecolor="#111827", label="Red waste"),
+        Line2D([0], [0], marker="s", markersize=10, color="w", markerfacecolor="#9ca3af", markeredgecolor=WASTE_COLORS["green"], markeredgewidth=2, label="Carrying waste"),
+        Line2D([0], [0], marker="o", markersize=10, color="w", markerfacecolor="#111827", markeredgecolor="white", label="Lock count badge"),
+        Line2D([0], [0], marker="o", markersize=10, color="#0b7285", markerfacecolor="none", label="Recent message pulse"),
         Line2D([0], [0], color="none", label="Waste label: id [Agent_id]"),
         Line2D([0], [0], color="none", label="Robot label: A<agent_id> | W<assigned_waste_id>"),
         Line2D([0], [0], color="none", label="Side panel: A<id> | L<count> | lock ids"),
+        Line2D([0], [0], color="none", label="Mailbox panel: U=unread R=read P=pending_out"),
     ]
     ax.legend(
         handles=legend_handles,
@@ -352,56 +395,60 @@ def SpaceGraph(model):
 def WasteCountPlot(model):
     """Plot the number of wastes by type and in total over time."""
     update_counter.get()
-    fig = Figure(figsize=(10, 5))
+    fig = Figure(figsize=(10, 4.2))
     ax = fig.subplots()
-    
+
     if model.waste_count_history:
         steps = [record["step"] for record in model.waste_count_history]
         green = [record["green"] for record in model.waste_count_history]
         yellow = [record["yellow"] for record in model.waste_count_history]
         red = [record["red"] for record in model.waste_count_history]
         total = [record["total"] for record in model.waste_count_history]
-        
+
         ax.plot(steps, green, label="Green", color="#096C0F", linewidth=2)
         ax.plot(steps, yellow, label="Yellow", color="#B8AC06", linewidth=2)
         ax.plot(steps, red, label="Red", color="#A80303", linewidth=2)
         ax.plot(steps, total, label="Total", color="black", linewidth=2, linestyle="--")
-        
-        ax.set_xlabel("Step", fontsize=11)
-        ax.set_ylabel("Number of Waste", fontsize=11)
-        ax.set_title("Waste Count Over Time", fontsize=12)
-        ax.legend(fontsize=10)
+
+        ax.set_xlabel("Step", fontsize=13)
+        ax.set_ylabel("Number of Waste", fontsize=13)
+        ax.set_title("Waste Count Over Time", fontsize=14)
+        ax.legend(fontsize=14)
         ax.grid(True, alpha=0.3)
         ax.tick_params(axis="both", labelsize=10)
-    
+
     solara.FigureMatplotlib(fig)
 
 @solara.component
 def CumulativeDistancePlot(model):
     """Plot cumulative Manhattan distance from all wastes to disposal."""
     update_counter.get()
-    fig = Figure(figsize=(10, 5))
+    fig = Figure(figsize=(10, 4.2))
     ax = fig.subplots()
-    
+
     if model.cumulative_distance_history:
         steps = [record["step"] for record in model.cumulative_distance_history]
         distances = [record["distance"] for record in model.cumulative_distance_history]
-        
+
         ax.plot(steps, distances, label="Cumulative Distance", color="#5f3dc4", linewidth=2)
-        
-        ax.set_xlabel("Step", fontsize=11)
-        ax.set_ylabel("Cumulative Distance (Manhattan)", fontsize=11)
-        ax.set_title("Cumulative Distance of Waste to Disposal Zone", fontsize=12)
-        ax.legend(fontsize=12)
+
+        ax.set_xlabel("Step", fontsize=13)
+        ax.set_ylabel("Cumulative Distance (Manhattan)", fontsize=13)
+        ax.set_title("Cumulative Distance of Waste to Disposal Zone", fontsize=14)
+        ax.legend(fontsize=14)
         ax.grid(True, alpha=0.3)
-        ax.tick_params(axis="both", labelsize=10)
-    
+        ax.tick_params(axis="both", labelsize=12)
+
     solara.FigureMatplotlib(fig)
+
+@solara.component
+def EmptyComponent(model):
+    return solara.Markdown("")
 
 model_params = {
     "n_green_agents": {
         "type": "SliderInt",
-        "value": 1,
+        "value": DEFAULT_MODEL_PARAMS["n_green_agents"],
         "label": "Number of green agents:",
         "min": 1,
         "max": 30,
@@ -409,7 +456,7 @@ model_params = {
     },
     "n_yellow_agents": {
         "type": "SliderInt",
-        "value": 1,
+        "value": DEFAULT_MODEL_PARAMS["n_yellow_agents"],
         "label": "Number of yellow agents:",
         "min": 1,
         "max": 30,
@@ -417,7 +464,7 @@ model_params = {
     },
     "n_red_agents": {
         "type": "SliderInt",
-        "value": 1,
+        "value": DEFAULT_MODEL_PARAMS["n_red_agents"],
         "label": "Number of red agents:",
         "min": 1,
         "max": 30,
@@ -425,7 +472,7 @@ model_params = {
     },
     "n_green_waste": {
         "type": "SliderInt",
-        "value": 10,
+        "value": DEFAULT_MODEL_PARAMS["n_green_waste"],
         "label": "Initial Green Waste:",
         "min": 0,
         "max": 50,
@@ -433,7 +480,7 @@ model_params = {
     },
     "n_yellow_waste": {
         "type": "SliderInt",
-        "value": 0,
+        "value": DEFAULT_MODEL_PARAMS["n_yellow_waste"],
         "label": "Initial Yellow Waste:",
         "min": 0,
         "max": 50,
@@ -441,7 +488,7 @@ model_params = {
     },
     "n_red_waste": {
         "type": "SliderInt",
-        "value": 0,
+        "value": DEFAULT_MODEL_PARAMS["n_red_waste"],
         "label": "Initial Red Waste:",
         "min": 0,
         "max": 50,
@@ -449,7 +496,7 @@ model_params = {
     },
     "width": {
         "type": "SliderInt",
-        "value": 30,
+        "value": DEFAULT_MODEL_PARAMS["width"],
         "label": "Width:",
         "min": 5,
         "max": 50,
@@ -457,7 +504,7 @@ model_params = {
     },
     "height": {
         "type": "SliderInt",
-        "value": 30,
+        "value": DEFAULT_MODEL_PARAMS["height"],
         "label": "Height:",
         "min": 5,
         "max": 50,
@@ -466,13 +513,12 @@ model_params = {
 }
 
 # Create initial model instance used by SolaraViz.
-model = Model(n_green_agents=1, n_yellow_agents=1, n_red_agents=1, n_green_waste=10, n_yellow_waste=0, n_red_waste=0, width=30, height=30)
+model = Model(**DEFAULT_MODEL_PARAMS)
 
 # Build dashboard components around model controls and live plots.
 page = SolaraViz(
     model,
-    components=[SpaceGraph, WasteCountPlot, CumulativeDistancePlot],
+    components=[SpaceGraph, WasteCountPlot, EmptyComponent, CumulativeDistancePlot],
     model_params=model_params,
     name="Radioactive Waste Collection",
 )
-# to start : "solara run server.py"

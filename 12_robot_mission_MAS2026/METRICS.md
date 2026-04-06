@@ -40,11 +40,14 @@ Utility:
 ## 3) Extinction / completion timing metrics
 
 ### First-zero step per waste type
-- `step_green_zero`: first step where `green == 0`.
-- `step_yellow_zero`: first step where `yellow == 0`.
-- `step_red_zero`: first step where `red == 0`.
+- `step_green_zero`: first step where `green == 0`, only if green was present at least once in the run.
+- `step_yellow_zero`: first step where `yellow == 0`, only if yellow was present at least once in the run.
+- `step_red_zero`: first step where `red == 0`, only if red was present at least once in the run.
 - `step_total_zero`: first step where `total == 0`.
 - `step_all_zero`: alias of `step_total_zero`.
+
+Important:
+- If a type never appears during a run, its `step_*_zero` stays empty (`NaN` in CSV) and is excluded from extinction-step plots.
 
 ### Effective completion step
 - `step_all_zero_effective`:

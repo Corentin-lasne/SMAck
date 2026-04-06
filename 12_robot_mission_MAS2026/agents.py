@@ -312,21 +312,11 @@ class baseAgent(Agent):
     # ==================
     # Delivery action with communication for agents
     # ==================
-    def _delivery_candidate_waste_id(self):
-        """Return the waste id that would be dropped next by model.drop (LIFO)."""
-        if not self.inventory:
-            return None
-        return getattr(self.inventory[-1], "waste_id", None)
-
     # Initie la communication des livraisons
     def _queue_delivery_query(self, performative, receiving_group, waste_type):
         """Send carry_query broadcast to all empty yellow robots for yellow waste delivery (once per load)."""
-        candidate_waste_id = self._delivery_candidate_waste_id()
-        if candidate_waste_id is None:
-            return False
-
         # Check if we already sent a query for this batch of yellows (avoid resending)
-        if getattr(self, "query_sent_for_batch", None) == candidate_waste_id:
+        if getattr(self, "query_sent_for_batch", None) == self.inventory[0].waste_id :
             return False
         
         # Broadcast carry_query to all full yellows
@@ -336,12 +326,11 @@ class baseAgent(Agent):
             content={
                 "query_id": self.model.next_query_id(),
                 "waste_type": waste_type,
-                "waste_id": candidate_waste_id,
             },
         ) 
         self.id_last_query = self.model.next_query_id() - 1
         self.step_last_query = self.current_step
-        self.query_sent_for_batch = candidate_waste_id
+        self.query_sent_for_batch = self.inventory[0].waste_id
         return True
     
     def _accept_delivery_query(self, message):
@@ -373,8 +362,20 @@ class baseAgent(Agent):
                 "waste_pos": self.pos,
             },
         )
+        
+    # Envoie un message broadcast à tous les robots d'une couleur pour leur indiquer qu'un déchet est sûrement présent à la frontière
+    def _queue_broadcast_waste_presence(self, receiving_group):
+        self._queue_broadcast_to_color(
+            color=receiving_group,
+            performative="waste_presence",
+            content={
+                "waste_type" : self.waste_map.get(self.pos),
+                "waste_pos" : self.pos,
+                "waste_id" : self.waste_id_map.get(self.pos),
+            },
+        )
 
-    # Envoie un message direct à tous les robots que le waste a été prise (lock) et qu'ils ne doivent pas la prendre (même à celui qui a été sélectionné car dans sas gestion des messages il pourra ignorer le lock)
+    # Envoie un message direct à tous les robots que le waste a été assigné (lock) et qu'ils ne doivent pas la prendre (même à celui qui a été sélectionné car dans sas gestion des messages il pourra ignorer le lock)
     def _queue_lock_delivery(self, receiving_group):
         self._queue_broadcast_to_color(
             color=receiving_group,
@@ -384,6 +385,7 @@ class baseAgent(Agent):
             },
         )
 
+    # Gère la logique de livraison à la frontière avec les échanges de messages : se déplacer vers la frontière, envoyer les messages de coordination, attendre les réponses, sélectionner le transporteur, envoyer les détails, etc.
     def _deliver(self, target_x, performative, receiving_group, waste_type):
          # Je dois atteindre la frontière 
         if self.pos[0] == target_x:
@@ -395,43 +397,33 @@ class baseAgent(Agent):
             
                 # Wait 2 steps for yellow to answer
                 # First tempo, drop
-                candidate_waste_id = self._delivery_candidate_waste_id()
-                if (
-                    getattr(self, "step_last_query", -10) == self.current_step - 1
-                    and candidate_waste_id is not None
-                    and getattr(self, "query_sent_for_batch", None) == candidate_waste_id
-                ):
+                if getattr(self, "step_last_query", -10) == self.current_step - 1: 
                     return "drop"
             
             # Second tempo après le drop, all the answers should have had arrived
             if getattr(self, "step_last_query", -10) == self.current_step - 2:
-                # Sélectionner le robot qui est le plus proche de moi parmi ceux qui ont répondu positivement
-                current_query_id = getattr(self, "id_last_query", None)
-                candidates = self.id_and_position_carrier_response.get(current_query_id, [])
+                # Parcours des robots qui ont répondu
+                candidates = self.id_and_position_carrier_response.get(getattr(self, "id_last_query", None), [])
+                
+                # Si au moins une réponse
                 if candidates:
+                    # Déterminer le robot le plus proche parmi les répondants
                     closest = min(candidates, key=lambda c: manhattan(self.pos, c[1]))
                     # Ajouter dans les pendings messages un message direct à ce jaune pour lui donner les détails de la livraison (id de la waste à prendre, etc.)
                     self._queue_detail_delivery(recipient_id=closest[0])
                     # Envoyer un lock à tous les autres jaunes pour ne pas qu'ils le prennent
-                    self._queue_lock_delivery(receiving_group=receiving_group)
-
-                    if current_query_id in self.id_and_position_carrier_response:
-                        del self.id_and_position_carrier_response[current_query_id]
-
-                    self.id_last_query = None
-                    self.step_last_query = None
-                    self.query_sent_for_batch = None
-                    return "send_message"
-
-                # No carry_response received: allow drop-out, but never emit lock.
-                if current_query_id in self.id_and_position_carrier_response:
-                    del self.id_and_position_carrier_response[current_query_id]
-                self.id_last_query = None
-                self.step_last_query = None
-                self.query_sent_for_batch = None
-            
-            
+                    self._queue_lock_delivery(receiving_group=receiving_group)                   
                 
+                # Pas de réponse
+                else :
+                    # On peut faire un broadcast pour indiquer la présence du déchet à la frontière
+                    self._queue_broadcast_waste_presence(receiving_group=receiving_group)
+            
+            self.id_last_query = None
+            self.step_last_query = None
+            self.query_sent_for_batch = None    
+            return "send_message"
+
         action = self._move_toward((target_x, self.pos[1]))
         return action or self._explore_action()
    
@@ -477,6 +469,21 @@ class baseAgent(Agent):
             # s'il n'y a pas eu au préalable un message pour l'assigner alors il faut le lock
             if waste_id != self.assigned_waste_id:
                 self.locked_waste_ids.add(waste_id)
+            return
+        
+        if message.performative == "waste_presence":
+            # Ajouter à son dictionnaire de connaissance la nature et la position du déchet 
+            waste_type = message.content.get("waste_type")
+            waste_pos = message.content.get("waste_pos")
+            waste_id = message.content.get("waste_id")
+            
+            if waste_pos not in self.waste_entries_map:
+                self.waste_entries_map[waste_pos] = [(waste_type, waste_id)]
+            else: 
+                self.waste_entries_map[waste_pos].append((waste_type, waste_id))
+            # Backward-compatible single-value views: choose first visible waste.
+            self.waste_map[waste_pos] = waste_type
+            self.waste_id_map[waste_pos] = waste_id
             return
         
         # Exclusively for red agents
@@ -582,11 +589,11 @@ class greenAgent(baseAgent):
 
     def deliberate(self):
         inv_types = [w.waste_type for w in self.inventory]
-
-        # Strict priority: if a response is queued, sending it consumes this turn.
-        send_action = self._send_if_pending_action()
-        if send_action:
-            return send_action
+        
+        # # Strict priority: if a response is queued, sending it consumes this turn.
+        # send_action = self._send_if_pending_action()
+        # if send_action:
+        #     return send_action
 
         # ===== LIVRAISON VERTE =====
         # Gestion du cas où on doit livrer un déchet vert à la frontière parce qu'on a atteint le timeout
@@ -639,7 +646,13 @@ class yellowAgent(baseAgent):
  
     def deliberate(self):
         inv_types = [w.waste_type for w in self.inventory]
-
+        
+        # ===== LIVRAISON JAUNE -> timeout -> action prioritaire =====
+        # Gestion du cas où on doit livrer un déchet jaune à la frontière parce qu'on a atteint le timeout
+        timeout_action = self._timeout_drop_action(target_x=self._eastern_border_x(), performative="carry_query_empty", receiving_group ="red", waste_type="yellow")
+        if timeout_action:
+            return timeout_action
+        
         # Strict priority: if a response is queued, sending it consumes this turn.
         send_action = self._send_if_pending_action()
         if send_action:
@@ -662,12 +675,6 @@ class yellowAgent(baseAgent):
         # Gestion du cas où on doit livrer un déchet vert à la fronière et qu'on effectue les échanges de communication sur la delivery 
         if "green" in inv_types or getattr(self, "step_last_query", -10) == self.current_step - 2 :
             return self._deliver(target_x = self._eastern_border_x(), performative="carry_query_empty", receiving_group="red", waste_type="green")
-        
-        # ===== LIVRAISON JAUNE =====
-        # Gestion du cas où on doit livrer un déchet jaune à la frontière parce qu'on a atteint le timeout
-        timeout_action = self._timeout_drop_action(target_x=self._eastern_border_x(), performative="carry_query_empty", receiving_group ="red", waste_type="yellow")
-        if timeout_action:
-            return timeout_action
 
         # ===== LIVRAISON ROUGE =====
         # Gestion du cas où on doit livrer un déchet jaune à la fronière et qu'on effectue les échanges de communication sur la delivery 

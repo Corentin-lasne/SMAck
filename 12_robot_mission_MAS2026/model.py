@@ -56,6 +56,14 @@ class Model(Model):
         self.step_yellow_zero = None
         self.step_red_zero = None
         self.step_total_zero = None
+        # Track whether each type has existed at least once in the run.
+        # This prevents recording a misleading extinction step at 0 for types
+        # that start absent (e.g., yellow/red when initialized at 0).
+        self.type_seen_positive = {
+            "green": False,
+            "yellow": False,
+            "red": False,
+        }
         self.disposed_counts = {
             "green": 0,
             "yellow": 0,
@@ -136,6 +144,8 @@ class Model(Model):
 
         # Initialize extinction trackers for already-zero initial conditions.
         initial_counts = self._compute_waste_counts()
+        for waste_type in self.type_seen_positive:
+            self.type_seen_positive[waste_type] = initial_counts[waste_type] > 0
         self._update_extinction_steps(initial_counts)
         if initial_counts["total"] == 0:
             self.running = False
@@ -190,11 +200,27 @@ class Model(Model):
 
     def _update_extinction_steps(self, counts):
         """Store the first step where each waste count reaches zero."""
-        if self.step_green_zero is None and counts["green"] == 0:
+        for waste_type in self.type_seen_positive:
+            if counts[waste_type] > 0:
+                self.type_seen_positive[waste_type] = True
+
+        if (
+            self.step_green_zero is None
+            and self.type_seen_positive["green"]
+            and counts["green"] == 0
+        ):
             self.step_green_zero = self.steps
-        if self.step_yellow_zero is None and counts["yellow"] == 0:
+        if (
+            self.step_yellow_zero is None
+            and self.type_seen_positive["yellow"]
+            and counts["yellow"] == 0
+        ):
             self.step_yellow_zero = self.steps
-        if self.step_red_zero is None and counts["red"] == 0:
+        if (
+            self.step_red_zero is None
+            and self.type_seen_positive["red"]
+            and counts["red"] == 0
+        ):
             self.step_red_zero = self.steps
         if self.step_total_zero is None and counts["total"] == 0:
             self.step_total_zero = self.steps
@@ -401,12 +427,15 @@ class Model(Model):
         )
 
     def broadcast_message(self, sender_id, performative, content, recipient_filter=None):
+        sent = 0
         for recipient_id, recipient in self.agent_index_by_id.items():
             if recipient_id == sender_id:
                 continue
             if recipient_filter and not recipient_filter(recipient):
                 continue
             self.send_message(sender_id, recipient_id, performative, content)
+            sent += 1
+        return sent
 
     def broadcast_to_color(self, sender_id, color, performative, content, inventory_state=None):
         def _recipient_filter(agent):
@@ -418,7 +447,7 @@ class Model(Model):
                 return len(agent.inventory)  > 0 and agent.inventory[0].waste_type == agent.target_waste_type
             return True
 
-        self.broadcast_message(
+        return self.broadcast_message(
             sender_id=sender_id,
             performative=performative,
             content=content,
@@ -434,6 +463,7 @@ class Model(Model):
         if not pending_batch:
             return self.get_percepts(agent)
 
+        sent_count = 0
         for pending in pending_batch:
             mode = pending.get("mode")
             performative = pending.get("performative")
@@ -443,17 +473,23 @@ class Model(Model):
                 recipient_id = pending.get("recipient_id")
                 if recipient_id is not None:
                     self.send_message(agent.agent_id, recipient_id, performative, content)
+                    sent_count += 1
             elif mode == "broadcast_color":
                 color = pending.get("color")
                 inventory_state = pending.get("inventory_state")
                 if color is not None:
-                    self.broadcast_to_color(
+                    sent_count += self.broadcast_to_color(
                         sender_id=agent.agent_id,
                         color=color,
                         performative=performative,
                         content=content,
                         inventory_state=inventory_state,
                     )
+
+        # Store lightweight telemetry for visualization.
+        if sent_count > 0:
+            agent.last_message_sent_step = self.steps
+            agent.last_message_sent_count = sent_count
 
         if hasattr(agent, "pending_messages") and agent.pending_messages is not None:
             agent.pending_messages.clear()
