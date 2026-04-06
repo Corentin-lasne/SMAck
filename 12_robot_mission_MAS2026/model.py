@@ -11,11 +11,12 @@ from mesa import Model
 from mesa.space import MultiGrid
 from agents import greenAgent, yellowAgent, redAgent
 from objects import radioactivityAgent, wasteAgent
-from config import WASTE_UPGRADE
+from config import DEFAULT_MODEL_PARAMS
+from messaging import Message, Mailbox
 
 class Model(Model):
     """A model with some number of agents, number of waste, and a grid cell."""
-    def __init__(self, n_green_agents=1, n_yellow_agents=1, n_red_agents=1, n_green_waste=1, n_yellow_waste=0, n_red_waste=0, width=10, height=10, seed=None):
+    def __init__(self, n_green_agents=1, n_yellow_agents=1, n_red_agents=1, n_green_waste=1, n_yellow_waste=0, n_red_waste=0, width=10, height=10, seed=None, exploration_share_interval_steps=DEFAULT_MODEL_PARAMS["exploration_share_interval_steps"], policy_profile_green=DEFAULT_MODEL_PARAMS["policy_profile_green"], policy_profile_yellow=DEFAULT_MODEL_PARAMS["policy_profile_yellow"], policy_profile_red=DEFAULT_MODEL_PARAMS["policy_profile_red"]):
         """Initialize the model.
 
         Args:
@@ -36,12 +37,19 @@ class Model(Model):
         self.num_green_waste = n_green_waste
         self.num_yellow_waste = n_yellow_waste
         self.num_red_waste = n_red_waste
+        self.exploration_share_interval_steps = exploration_share_interval_steps
+        self.policy_profile_green = policy_profile_green
+        self.policy_profile_yellow = policy_profile_yellow
+        self.policy_profile_red = policy_profile_red
         
         self.grid = MultiGrid(width, height, torus=False)
         self.robotAgents = []
         self.wasteAgents = []
+        self.agent_mailboxes = {}
+        self.agent_index_by_id = {}
         self._next_agent_id = 1
         self._next_waste_id = 1
+        self._next_query_id = 1
         
         # Metrics tracking
         self.waste_count_history = []  # [{"step": 0, "green": 1, "yellow": 0, "red": 0, "total": 1}, ...]
@@ -52,6 +60,14 @@ class Model(Model):
         self.step_yellow_zero = None
         self.step_red_zero = None
         self.step_total_zero = None
+        # Track whether each type has existed at least once in the run.
+        # This prevents recording a misleading extinction step at 0 for types
+        # that start absent (e.g., yellow/red when initialized at 0).
+        self.type_seen_positive = {
+            "green": False,
+            "yellow": False,
+            "red": False,
+        }
         self.disposed_counts = {
             "green": 0,
             "yellow": 0,
@@ -110,25 +126,30 @@ class Model(Model):
 
         # Create agents and place them randomly in their area
         for _ in range(self.num_green_agents):
-            green_agent = greenAgent(self, agent_id=self.next_agent_id())
+            green_agent = greenAgent(self, agent_id=self.next_agent_id(), policy_profile=self.policy_profile_green)
             self.robotAgents.append(green_agent)
+            self._register_robot_mailbox(green_agent)
             pos = self.get_random_free_robot_position(self.z1)
             self.grid.place_agent(green_agent, pos)
             
         for _ in range(self.num_yellow_agents):
-            yellow_agent = yellowAgent(self, agent_id=self.next_agent_id())
+            yellow_agent = yellowAgent(self, agent_id=self.next_agent_id(), policy_profile=self.policy_profile_yellow)
             self.robotAgents.append(yellow_agent)
+            self._register_robot_mailbox(yellow_agent)
             pos = self.get_random_free_robot_position(self.z2)
             self.grid.place_agent(yellow_agent, pos)
             
         for _ in range(self.num_red_agents):
-            red_agent = redAgent(self, agent_id=self.next_agent_id())
+            red_agent = redAgent(self, agent_id=self.next_agent_id(), policy_profile=self.policy_profile_red)
             self.robotAgents.append(red_agent)
+            self._register_robot_mailbox(red_agent)
             pos = self.get_random_free_robot_position(self.z3)
             self.grid.place_agent(red_agent, pos)
 
         # Initialize extinction trackers for already-zero initial conditions.
         initial_counts = self._compute_waste_counts()
+        for waste_type in self.type_seen_positive:
+            self.type_seen_positive[waste_type] = initial_counts[waste_type] > 0
         self._update_extinction_steps(initial_counts)
         if initial_counts["total"] == 0:
             self.running = False
@@ -142,6 +163,11 @@ class Model(Model):
         waste_id = self._next_waste_id
         self._next_waste_id += 1
         return waste_id
+
+    def next_query_id(self):
+        query_id = self._next_query_id
+        self._next_query_id += 1
+        return query_id
         
     def step(self):
         if not self.running:
@@ -178,11 +204,27 @@ class Model(Model):
 
     def _update_extinction_steps(self, counts):
         """Store the first step where each waste count reaches zero."""
-        if self.step_green_zero is None and counts["green"] == 0:
+        for waste_type in self.type_seen_positive:
+            if counts[waste_type] > 0:
+                self.type_seen_positive[waste_type] = True
+
+        if (
+            self.step_green_zero is None
+            and self.type_seen_positive["green"]
+            and counts["green"] == 0
+        ):
             self.step_green_zero = self.steps
-        if self.step_yellow_zero is None and counts["yellow"] == 0:
+        if (
+            self.step_yellow_zero is None
+            and self.type_seen_positive["yellow"]
+            and counts["yellow"] == 0
+        ):
             self.step_yellow_zero = self.steps
-        if self.step_red_zero is None and counts["red"] == 0:
+        if (
+            self.step_red_zero is None
+            and self.type_seen_positive["red"]
+            and counts["red"] == 0
+        ):
             self.step_red_zero = self.steps
         if self.step_total_zero is None and counts["total"] == 0:
             self.step_total_zero = self.steps
@@ -251,6 +293,11 @@ class Model(Model):
         if action is None:
             # No feasible action this turn (blocked or no valid policy branch).
             return self.get_percepts(agent)
+
+        # Keep agent state stable for a short window after answering a carry query.
+        if action in {"pick_up", "drop", "transform"} and agent.current_step < agent.state_change_freeze_until:
+            return self.get_percepts(agent)
+
         if action.startswith("move"):
             direction = action.split("_")[1]
             return self.move_agent(agent, direction)
@@ -260,6 +307,8 @@ class Model(Model):
             return self.drop(agent)
         elif action == "transform":
             return self.transform(agent)
+        elif action == "send_message":
+            return self.send_agent_message(agent)
         else:
             raise ValueError(f"Unknown action: {action}")
         
@@ -307,7 +356,7 @@ class Model(Model):
         """Pick up waste if the agent is on a cell with waste and return the resulting percepts."""
         cell_contents = self.grid.get_cell_list_contents([agent.pos])
         for obj in cell_contents:
-            if isinstance(obj, wasteAgent) and agent.can_add_waste_type(obj.waste_type):
+            if isinstance(obj, wasteAgent) and agent._can_add_waste_type(obj.waste_type, obj.waste_id, obj.pos):
                 agent.inventory.append(obj)
                 self.grid.remove_agent(obj)
                 if obj in self.wasteAgents:
@@ -319,6 +368,9 @@ class Model(Model):
         """Drop waste if the agent is carrying waste and return the resulting percepts."""
         if agent.inventory:
             waste = agent.inventory.pop()
+            agent.last_dropped_waste_id = waste.waste_id
+            agent.last_dropped_waste_type = waste.waste_type
+            agent.last_dropped_waste_pos = agent.pos
             if agent.pos == self.waste_disposal_zone:
                 # Disposed!
                 self.disposed_counts[waste.waste_type] += 1
@@ -358,3 +410,100 @@ class Model(Model):
             for pos in neighborhood:
                 percepts["surrounding"][pos] = self.grid.get_cell_list_contents([pos])
         return percepts
+    
+    
+ # ================================
+ ### Messaging system methods ###
+ # ================================
+    def _register_robot_mailbox(self, agent):
+        self.agent_mailboxes[agent.agent_id] = Mailbox()
+        self.agent_index_by_id[agent.agent_id] = agent
+
+    def get_new_messages(self, recipient_id):
+        mailbox = self.agent_mailboxes.get(recipient_id)
+        if mailbox is None:
+            return []
+        return mailbox.pop_new_messages()
+
+    def send_message(self, sender_id, recipient_id, performative, content):
+        mailbox = self.agent_mailboxes.get(recipient_id)
+        if mailbox is None:
+            return
+        mailbox.receive_message(
+            Message(
+                sender_id=sender_id,
+                recipient_id=recipient_id,
+                performative=performative,
+                content=content,
+            )
+        )
+
+    def broadcast_message(self, sender_id, performative, content, recipient_filter=None):
+        sent = 0
+        for recipient_id, recipient in self.agent_index_by_id.items():
+            if recipient_id == sender_id:
+                continue
+            if recipient_filter and not recipient_filter(recipient):
+                continue
+            self.send_message(sender_id, recipient_id, performative, content)
+            sent += 1
+        return sent
+
+    def broadcast_to_color(self, sender_id, color, performative, content, inventory_state=None):
+        def _recipient_filter(agent):
+            if getattr(agent, "team_color", None) != color:
+                return False
+            if inventory_state == "empty":
+                return len(agent.inventory) == 0
+            if inventory_state == "not_empty_target_waste":
+                return len(agent.inventory)  > 0 and agent.inventory[0].waste_type == agent.target_waste_type
+            return True
+
+        return self.broadcast_message(
+            sender_id=sender_id,
+            performative=performative,
+            content=content,
+            recipient_filter=_recipient_filter,
+        )
+
+    def send_agent_message(self, agent):
+        pending_batch = list(getattr(agent, "pending_messages", []) or [])
+        pending_single = getattr(agent, "pending_message", None)
+        if pending_single is not None:
+            pending_batch.append(pending_single)
+
+        if not pending_batch:
+            return self.get_percepts(agent)
+
+        sent_count = 0
+        for pending in pending_batch:
+            mode = pending.get("mode")
+            performative = pending.get("performative")
+            content = pending.get("content", {})
+
+            if mode == "direct":
+                recipient_id = pending.get("recipient_id")
+                if recipient_id is not None:
+                    self.send_message(agent.agent_id, recipient_id, performative, content)
+                    sent_count += 1
+            elif mode == "broadcast_color":
+                color = pending.get("color")
+                inventory_state = pending.get("inventory_state")
+                if color is not None:
+                    sent_count += self.broadcast_to_color(
+                        sender_id=agent.agent_id,
+                        color=color,
+                        performative=performative,
+                        content=content,
+                        inventory_state=inventory_state,
+                    )
+
+        # Store lightweight telemetry for visualization.
+        if sent_count > 0:
+            agent.last_message_sent_step = self.steps
+            agent.last_message_sent_count = sent_count
+
+        if hasattr(agent, "pending_messages") and agent.pending_messages is not None:
+            agent.pending_messages.clear()
+        agent.pending_message = None
+        return self.get_percepts(agent)

@@ -8,7 +8,6 @@ Date of creation : 16/03/2026
 """
 
 from mesa import Agent
-
 import random
 
 class radioactivityAgent(Agent):
