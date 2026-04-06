@@ -91,6 +91,15 @@ def handle_disposal_found(agent, message):
         agent.known_disposal_zone = position
 
 
+def handle_exploration_positions_share(agent, message):
+    """Merge explored core positions shared by same-color agents."""
+    positions = message.content.get("positions", [])
+    for pos in positions:
+        x, y = pos
+        agent.shared_explored_core_positions.add((x, y))
+        agent.target_pos_explo = None  # Reset exploration target to trigger new target selection
+
+
 def handle_standard_message(agent, message):
     """ Redirect the appropriate handling depending on the performative of the message."""
     if message.performative in {"carry_query_not_empty", "carry_query_empty"}:
@@ -115,6 +124,10 @@ def handle_standard_message(agent, message):
 
     if message.performative == "disposal_found":
         handle_disposal_found(agent, message)
+        return
+
+    if message.performative == "exploration_positions_share":
+        handle_exploration_positions_share(agent, message)
 
 
 # ====== GREEN : DELIBERATION FUNCTIONS ======
@@ -144,11 +157,12 @@ def deliberate_green_no_communication(agent):
     if inv_types.count("green") >= 2:
         return "transform"
 
-    # P
+    # Pick up of green waste if able to
     current_contents = agent.percepts.get("surrounding", {}).get(agent.pos, [])
     if any(isinstance(o, wasteAgent) and agent._can_add_waste_type(o.waste_type, o.waste_id, o.pos) for o in current_contents):
         return "pick_up"
 
+    # Move toward known green waste if any in his map knowledge
     green_targets = [
         p for p, entries in agent.waste_entries_map.items()
         if agent.model.is_position_allowed(agent, p)
@@ -162,6 +176,7 @@ def deliberate_green_no_communication(agent):
         action = agent._move_toward(closest)
         return action or agent._explore_action()
 
+    # Exploration
     return agent._explore_action()
 
 
@@ -169,6 +184,13 @@ def deliberate_green_no_communication(agent):
 def deliberate_green_with_communication(agent):
     """ Sophisticated policy for green agents with communication: in addition to the basic policy, communication sent when delivering. 
     Same priority order but with coordination for delivery.
+    - Timeout of green waste
+    - Yellow delivery
+    - Smart exploration sharing if enabled and due
+    - Transform green waste
+    - Pick up of green waste
+    - Movement toward known green waste
+    - Exploration
     """
     inv_types = [w.waste_type for w in agent.inventory]
 
@@ -190,6 +212,11 @@ def deliberate_green_with_communication(agent):
             receiving_group="yellow",
             waste_type="yellow",
         )
+
+    # Smart exploration sharing (after yellow delivery priority).
+    share_action = agent.queue_exploration_share_if_due(interval_steps=30)
+    if share_action:
+        return share_action
 
     # Transformation
     if inv_types.count("green") >= 2:
@@ -278,10 +305,11 @@ def deliberate_yellow_no_communication(agent):
 def deliberate_yellow_with_communication(agent):
     """ Sophisticated policy for yellow agents with communication: in addition to the basic policy, communication sent when delivering. 
     Change in priority order :
-    - Timeout of yellow waste if any
+    - Direct delivery of green or red waste
     - Answer to delivery queries (green or yellow) if requirements are met
     - Handle assigned delivery if any
-    - Direct delivery of green or red waste
+    - Timeout of yellow waste if any
+    - Smart exploration sharing if enabled and due
     - Transform yellow waste
     - Pick up of yellow waste not locked
     - Movement toward known yellow waste not locked
@@ -289,6 +317,23 @@ def deliberate_yellow_with_communication(agent):
     """
     inv_types = [w.waste_type for w in agent.inventory]
 
+    # Direct delivery of green or red waste
+    if "green" in inv_types or getattr(agent, "step_last_query", -10) == agent.current_step - 2:
+        return agent._deliver(
+            target_x=agent._eastern_border_x(),
+            performative="carry_query_empty",
+            receiving_group="red",
+            waste_type="green",
+        )
+
+    if "red" in inv_types or getattr(agent, "step_last_query", -10) == agent.current_step - 2:
+        return agent._deliver(
+            target_x=agent._eastern_border_x(),
+            performative="carry_query_empty",
+            receiving_group="red",
+            waste_type="red",
+        )
+        
     # Answer to delivery queries (green or yellow) if requirements are met
     send_action = agent._send_if_pending_action()
     if send_action:
@@ -316,22 +361,10 @@ def deliberate_yellow_with_communication(agent):
     if timeout_action:
         return timeout_action
 
-    # Direct delivery of green or red waste
-    if "green" in inv_types or getattr(agent, "step_last_query", -10) == agent.current_step - 2:
-        return agent._deliver(
-            target_x=agent._eastern_border_x(),
-            performative="carry_query_empty",
-            receiving_group="red",
-            waste_type="green",
-        )
-
-    if "red" in inv_types or getattr(agent, "step_last_query", -10) == agent.current_step - 2:
-        return agent._deliver(
-            target_x=agent._eastern_border_x(),
-            performative="carry_query_empty",
-            receiving_group="red",
-            waste_type="red",
-        )
+    # Smart exploration sharing (after direct delivery priorities).
+    share_action = agent.queue_exploration_share_if_due(interval_steps=30)
+    if share_action:
+        return share_action
 
     # Transformation
     if inv_types.count("yellow") == 2:
@@ -429,9 +462,10 @@ def deliberate_red_with_communication(agent):
     Change in priority order :
     - Search for disposal zone if not known
     - Share discovery of disposal zone with other red agents if first
+    - Direct drop to disposal zone if any waste in inventory
     - Answer to delivery queries if requirements are met
     - Handle assigned delivery if any (until taking assigned waste)
-    - Direct drop to disposal zone if any waste in inventory
+    - Smart exploration sharing if enabled and due
     - Pick up of waste not locked
     - Movement toward known waste not locked
     - Exploration
@@ -447,6 +481,14 @@ def deliberate_red_with_communication(agent):
 
     if agent.known_disposal_zone is None:
         return agent._initial_disposal_search_action()
+
+    # Direct drop to disposal zone if any waste in inventory
+    if agent.inventory:
+        target = agent.known_disposal_zone
+        if agent.pos == target:
+            return "drop"
+        action = agent._move_toward(target)
+        return action or agent._explore_action()
 
     # Answer to delivery queries if requirements are met
     send_action = agent._send_if_pending_action()
@@ -464,13 +506,10 @@ def deliberate_red_with_communication(agent):
     if assigned_action:
         return assigned_action
 
-    # Direct drop to disposal zone if any waste in inventory
-    if agent.inventory:
-        target = agent.known_disposal_zone
-        if agent.pos == target:
-            return "drop"
-        action = agent._move_toward(target)
-        return action or agent._explore_action()
+    # Smart exploration sharing (after direct delivery priority).
+    share_action = agent.queue_exploration_share_if_due(interval_steps=30)
+    if share_action:
+        return share_action
 
     # Pick up of known waste not locked for them
     current_contents = agent.percepts.get("surrounding", {}).get(agent.pos, [])

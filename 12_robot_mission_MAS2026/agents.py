@@ -49,7 +49,12 @@ class baseAgent(Agent):
         self.waste_entries_map = {}
         self.visited = set()
         self.target_pos = None
+        self.target_pos_explo = None
         self.scout_target = None  # Persistent target for patrolling/scouting
+        self.smart_exploration_enabled = False
+        self.interval_explored_positions = set()
+        self.shared_explored_core_positions = set()
+        self.last_exploration_share_step = 30
         
         self.known_disposal_zone = None
         
@@ -154,9 +159,10 @@ class baseAgent(Agent):
                 self.waste_id_map.pop(pos, None)
                 self.waste_entries_map.pop(pos, None)
  
-        # Mark current cell as visited
+        # Mark current cell as visited and store it
         if self.pos:
             self.visited.add(self.pos)
+            self.interval_explored_positions.add(self.pos)
 
     def _safe_move_actions(self, latest_observation):
         """Return movement actions that do not lead to a cell occupied by another robot."""
@@ -235,7 +241,7 @@ class baseAgent(Agent):
         )
         return safe_sorted[0][0]
 
-    def _explore_action(self):
+    def _default_explore_action(self):
         """
         Move toward the nearest frontier cell or random safe move.
         """
@@ -264,6 +270,47 @@ class baseAgent(Agent):
         if safe:
             return random.choice(safe)[0]
         return None
+
+    def _smart_explore_action(self):
+        # Collective-only exploration: all agents target unseen cells in their whole birth zone.
+        west_birth_x = self._western_border_x() + 1
+        east_birth_x = self._eastern_border_x()
+        candidate_targets = [
+            (x, y)
+            for x in range(west_birth_x, east_birth_x)
+            for y in range(self.model.grid.height)
+            if self.model.is_position_allowed(self, (x, y))
+        ]
+
+        unexplored_targets = [p for p in candidate_targets if p not in self.shared_explored_core_positions]
+
+        # Keep the same exploration target until reached (or invalid), do not recompute every turn.
+        if self.target_pos_explo is not None:
+            if self.pos == self.target_pos_explo or self.target_pos_explo not in candidate_targets:
+                self.target_pos_explo = None
+
+        if self.target_pos_explo is None and unexplored_targets:
+            # Randomly alternate between two assignment strategies:
+            # 1) random unexplored cell, 2) farthest unexplored cell.
+            if random.random() < 0.5:
+                self.target_pos_explo = random.choice(unexplored_targets)
+            else:
+                self.target_pos_explo = max(
+                    unexplored_targets,
+                    key=lambda p: manhattan(self.pos, p) + random.uniform(0, 0.5)
+                )
+
+        if self.target_pos_explo is not None:
+            action = self._move_toward(self.target_pos_explo)
+            if action:
+                return action
+
+        return self._default_explore_action()
+
+    def _explore_action(self):
+        if self.smart_exploration_enabled:
+            return self._smart_explore_action()
+        return self._default_explore_action()
     
     def _can_add_waste_type(self, waste_type, waste_id, waste_pos):
         if len(self.inventory) >= self.max_capacity:
@@ -451,6 +498,33 @@ class baseAgent(Agent):
 
         action = self._move_toward((target_x, self.pos[1]))
         return action or self._explore_action()
+   
+    def _queue_exploration_share_to_color(self, interval_steps=30):
+        if self.current_step - self.last_exploration_share_step < interval_steps:
+            return False
+
+        explored_payload = [
+            [x, y]
+            for (x, y) in self.interval_explored_positions
+        ]
+
+        self._queue_broadcast_to_color(
+            color=self.team_color,
+            performative="exploration_positions_share",
+            content={
+                "positions": explored_payload,
+            },
+        )
+        self.last_exploration_share_step = self.current_step
+        self.interval_explored_positions.clear()
+        return True
+    
+    def queue_exploration_share_if_due(self, interval_steps=30):
+        if not self.smart_exploration_enabled:
+            return None
+        if self._queue_exploration_share_to_color(interval_steps=interval_steps):
+            return "send_message"
+        return None
    
     # ==================
     # Handling incoming messages for delivery coordination and other

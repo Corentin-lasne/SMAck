@@ -294,7 +294,7 @@ class Model(Model):
             return self.get_percepts(agent)
 
         # Keep agent state stable for a short window after answering a carry query.
-        if action in {"pick_up", "drop", "transform"} and agent.current_step < getattr(agent, "state_change_freeze_until", -1):
+        if action in {"pick_up", "drop", "transform"} and agent.current_step < agent.state_change_freeze_until:
             return self.get_percepts(agent)
 
         if action.startswith("move"):

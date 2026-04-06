@@ -514,19 +514,19 @@ model_params = {
         "type": "Select",
         "value": DEFAULT_MODEL_PARAMS["policy_profile_green"],
         "label": "Green Agents Policy Profile:",
-        "values": ["no_communication", "widespread"],
+        "values": ["no_communication", "widespread", "widespread_com_smart_explo"],
     },
     "policy_profile_yellow": {
         "type": "Select",
         "value": DEFAULT_MODEL_PARAMS["policy_profile_yellow"],
         "label": "Yellow Agents Policy Profile:",
-        "values": ["no_communication", "widespread"],
+        "values": ["no_communication", "widespread", "widespread_com_smart_explo"],
     },
     "policy_profile_red": {
         "type": "Select",
         "value": DEFAULT_MODEL_PARAMS["policy_profile_red"],
         "label": "Red Agents Policy Profile:",
-        "values": ["no_communication", "widespread"],
+        "values": ["no_communication", "widespread", "widespread_com_smart_explo"],
     },
 }
 

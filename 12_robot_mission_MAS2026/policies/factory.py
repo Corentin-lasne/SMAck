@@ -4,22 +4,37 @@ from __future__ import annotations
 
 from config import DEFAULT_MODEL_PARAMS
 
-from .green import GreenNoCommunicationPolicy, GreenWidespreadCommunicationPolicy
-from .red import RedNoCommunicationPolicy, RedWidespreadCommunicationPolicy
-from .yellow import YellowNoCommunicationPolicy, YellowWidespreadCommunicationPolicy
+from .green import (
+    GreenNoCommunicationPolicy,
+    GreenWidespreadCommunicationPolicy,
+    GreenWidespreadCommunicationSmartExploPolicy,
+)
+from .red import (
+    RedNoCommunicationPolicy,
+    RedWidespreadCommunicationPolicy,
+    RedWidespreadCommunicationSmartExploPolicy,
+)
+from .yellow import (
+    YellowNoCommunicationPolicy,
+    YellowWidespreadCommunicationPolicy,
+    YellowWidespreadCommunicationSmartExploPolicy,
+)
 
 POLICY_REGISTRY = {
     "green": {
         "no_communication": GreenNoCommunicationPolicy,
         "widespread": GreenWidespreadCommunicationPolicy,
+        "widespread_com_smart_explo": GreenWidespreadCommunicationSmartExploPolicy,
     },
     "yellow": {
         "no_communication": YellowNoCommunicationPolicy,
         "widespread": YellowWidespreadCommunicationPolicy,
+        "widespread_com_smart_explo": YellowWidespreadCommunicationSmartExploPolicy,
     },
     "red": {
         "no_communication": RedNoCommunicationPolicy,
         "widespread": RedWidespreadCommunicationPolicy,
+        "widespread_com_smart_explo": RedWidespreadCommunicationSmartExploPolicy,
     },
 }
 

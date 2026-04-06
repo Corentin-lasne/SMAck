@@ -372,9 +372,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed-start", type=int, default=None, help="If set, run deterministic seeds from seed_start to seed_start + iterations - 1")
     parser.add_argument("--seeds", default=None, help="Comma-separated explicit seeds (requires --iterations 1)")
     parser.add_argument("--stall-window", type=int, default=200, help="Window size to flag no-progress runs")
-    parser.add_argument("--policy-profile-green", default=str(DEFAULT_MODEL_PARAMS["policy_profile_green"]), help="Comma-separated policy profiles for green agents: no_communication, red_communication, widespread")
-    parser.add_argument("--policy-profile-yellow", default=str(DEFAULT_MODEL_PARAMS["policy_profile_yellow"]), help="Comma-separated policy profiles for yellow agents")
-    parser.add_argument("--policy-profile-red", default=str(DEFAULT_MODEL_PARAMS["policy_profile_red"]), help="Comma-separated policy profiles for red agents")
+    parser.add_argument("--policy-profile-green", default=str(DEFAULT_MODEL_PARAMS["policy_profile_green"]), help="Comma-separated policy profiles for green agents: no_communication, widespread, widespread_com_smart_explo")
+    parser.add_argument("--policy-profile-yellow", default=str(DEFAULT_MODEL_PARAMS["policy_profile_yellow"]), help="Comma-separated policy profiles for yellow agents: no_communication, widespread, widespread_com_smart_explo")
+    parser.add_argument("--policy-profile-red", default=str(DEFAULT_MODEL_PARAMS["policy_profile_red"]), help="Comma-separated policy profiles for red agents: no_communication, widespread, widespread_com_smart_explo")
     parser.add_argument("--output-dir", default="batch_outputs")
     return parser.parse_args()
 
