@@ -1,0 +1,22 @@
+| config | policy | cleaned_rate | median_step_all_zero_effective | median_compaction_ratio_total | timed_out_rate | possible_deadlock_rate | n_runs |
+|---|---|---:|---:|---:|---:|---:|---:|
+| cfg1 | no_communication | 100.0% | 57.00 | 0.17 | 0.0% | 0.0% | 20 |
+| cfg2 | no_communication | 95.0% | 627.00 | 0.09 | 5.0% | 5.0% | 20 |
+| cfg3 | no_communication | 100.0% | 315.50 | 0.07 | 0.0% | 0.0% | 20 |
+| cfg4 | no_communication | 100.0% | 216.00 | 0.11 | 0.0% | 0.0% | 20 |
+| cfg5 | no_communication | 100.0% | 517.50 | 0.08 | 0.0% | 0.0% | 20 |
+| cfg1 | widespread | 100.0% | 57.50 | 0.21 | 0.0% | 0.0% | 20 |
+| cfg2 | widespread | 90.0% | 380.00 | 0.13 | 10.0% | 10.0% | 20 |
+| cfg3 | widespread | 100.0% | 214.00 | 0.09 | 0.0% | 0.0% | 20 |
+| cfg4 | widespread | 95.0% | 188.50 | 0.13 | 5.0% | 5.0% | 20 |
+| cfg5 | widespread | 70.0% | 463.50 | 0.09 | 30.0% | 30.0% | 20 |
+| cfg1 | smart_explo_10 | 95.0% | 60.50 | 0.25 | 5.0% | 5.0% | 20 |
+| cfg2 | smart_explo_10 | 90.0% | 344.50 | 0.13 | 10.0% | 10.0% | 20 |
+| cfg3 | smart_explo_10 | 85.0% | 257.00 | 0.08 | 15.0% | 15.0% | 20 |
+| cfg4 | smart_explo_10 | 100.0% | 209.00 | 0.15 | 0.0% | 0.0% | 20 |
+| cfg5 | smart_explo_10 | 70.0% | 418.00 | 0.11 | 30.0% | 30.0% | 20 |
+| cfg1 | smart_explo_30 | 95.0% | 57.00 | 0.25 | 5.0% | 5.0% | 20 |
+| cfg2 | smart_explo_30 | 95.0% | 373.00 | 0.15 | 5.0% | 5.0% | 20 |
+| cfg3 | smart_explo_30 | 85.0% | 238.00 | 0.09 | 15.0% | 15.0% | 20 |
+| cfg4 | smart_explo_30 | 90.0% | 179.50 | 0.13 | 10.0% | 10.0% | 20 |
+| cfg5 | smart_explo_30 | 65.0% | 459.00 | 0.09 | 35.0% | 30.0% | 20 |

@@ -10,7 +10,7 @@ actions = {
         }
 
 WASTE_UPGRADE = {"green": "yellow", "yellow": "red"}
-DEFAULT_POLICY_PROFILE = "widespread"
+DEFAULT_POLICY_PROFILE = "no_communication"
 
 # Shared defaults used by both batch runner and Solara dashboard.
 DEFAULT_MODEL_PARAMS = {

@@ -18,19 +18,16 @@ from model import Model
 from config import DEFAULT_MODEL_PARAMS
 
 
-DISTANCE_STALL_WINDOW = 200
-
-
 def _add_filtered_runs_badge(ax: plt.Axes, filtered_runs: int, total_runs: int) -> None:
     """Add an annotation above the plot with the number of filtered runs."""
-    if total_runs <= 0:
+    if total_runs <= 0 or filtered_runs <= 0:
         return
     ax.text(
         0.5,
         1.1,
         (
-            "Filtered out (cumulative_distance stalled "
-            f"{DISTANCE_STALL_WINDOW}+ steps): {filtered_runs}/{total_runs} runs"
+            "Filtered out runs: "
+            f"{filtered_runs}/{total_runs}"
         ),
         transform=ax.transAxes,
         ha="center",
@@ -104,19 +101,6 @@ def _plot_waste_composition(
     plt.tight_layout()
     plt.savefig(out_dir / "total_waste_over_time.png", dpi=150)
     plt.close()
-
-
-def _has_stagnation_window(series: pd.Series, window_size: int) -> bool:
-    """Return True if a series contains a flat window of at least window_size steps."""
-    if window_size <= 1:
-        return False
-    values = series.to_numpy()
-    if len(values) < window_size:
-        return False
-    for i in range(0, len(values) - window_size + 1):
-        if values[i] == values[i + window_size - 1] and len(set(values[i : i + window_size])) == 1:
-            return True
-    return False
 
 
 def parse_int_list(value: str) -> list[int]:
@@ -241,6 +225,7 @@ def make_plots(
     out_dir: Path,
     filtered_runs: int,
     total_runs: int,
+    mean_cleanup_step: float | None,
 ) -> None:
     sns.set_theme(style="whitegrid")
 
@@ -302,7 +287,36 @@ def make_plots(
     if not melt_df.empty:
         melt_df["metric"] = melt_df["metric"].replace({total_step_effective_col: "step_all_zero"})
         plt.figure(figsize=(10, 5))
-        ax = sns.boxplot(data=melt_df, x="metric", y="step")
+        ax = sns.boxplot(
+            data=melt_df,
+            x="metric",
+            y="step",
+            hue="metric",
+            order=["step_green_zero", "step_yellow_zero", "step_red_zero", "step_all_zero"],
+            hue_order=["step_green_zero", "step_yellow_zero", "step_red_zero", "step_all_zero"],
+            palette={
+                "step_green_zero": "green",
+                "step_yellow_zero": "gold",
+                "step_red_zero": "red",
+                "step_all_zero": "black",
+            },
+            dodge=False,
+        )
+        if ax.legend_ is not None:
+            ax.legend_.remove()
+        if mean_cleanup_step is not None and pd.notna(mean_cleanup_step):
+            ax.axhline(mean_cleanup_step, color="red", linestyle="--", linewidth=1.5)
+            ax.text(
+                0.99,
+                mean_cleanup_step,
+                f"Mean cleanup step (successful runs): {mean_cleanup_step:.2f}",
+                transform=ax.get_yaxis_transform(),
+                ha="right",
+                va="bottom",
+                color="red",
+                fontsize=9,
+                bbox={"boxstyle": "round,pad=0.2", "facecolor": "white", "edgecolor": "red"},
+            )
         ax.set_title("Distribution of extinction steps by metric")
         ax.set_xlabel("Metric")
         ax.set_ylabel("Step")
@@ -332,12 +346,22 @@ def make_plots(
             }
         )
         plt.figure(figsize=(11, 6))
-        ax = sns.boxplot(data=ratio_df, x="metric", y="ratio", hue="config")
+        ax = sns.boxplot(
+            data=ratio_df,
+            x="metric",
+            y="ratio",
+            hue="metric",
+            order=["green", "yellow", "red", "total"],
+            hue_order=["green", "yellow", "red", "total"],
+            palette={"green": "green", "yellow": "gold", "red": "red", "total": "black"},
+            dodge=False,
+        )
+        if ax.legend_ is not None:
+            ax.legend_.remove()
         ax.axhline(0, color="black", linewidth=1, linestyle="--")
         ax.set_title("Compaction ratio delta vs theoretical optimum")
         ax.set_xlabel("Waste type")
         ax.set_ylabel("(real disposed - optimal disposed) / initial total waste")
-        ax.legend(title="Configuration")
         plt.tight_layout()
         plt.savefig(out_dir / "compaction_ratio_distribution.png", dpi=150)
         plt.close()
@@ -456,20 +480,10 @@ def main() -> None:
         + ")"
     )
 
-    run_distance_stagnation = (
-        model_rows.sort_values(["RunId", "Step"])
-        .groupby("RunId")["cumulative_distance"]
-        .apply(lambda s: _has_stagnation_window(s, DISTANCE_STALL_WINDOW))
-        .rename("distance_stagnation")
-        .reset_index()
-    )
-    model_rows = model_rows.merge(run_distance_stagnation, on="RunId", how="left")
-    model_rows["distance_stagnation"] = model_rows["distance_stagnation"].fillna(False)
-
     total_runs = int(model_rows["RunId"].nunique()) if not model_rows.empty else 0
-    filtered_runs = int(run_distance_stagnation["distance_stagnation"].sum()) if not run_distance_stagnation.empty else 0
+    filtered_runs = 0
 
-    usable_rows = model_rows[~model_rows["distance_stagnation"]].copy()
+    usable_rows = model_rows.copy()
 
     # Summary: last collected row per run.
     summary_df = (
@@ -537,6 +551,7 @@ def main() -> None:
             .reset_index()
         )
         summary_df = summary_df.merge(stall_by_run, on="RunId", how="left")
+        summary_df["possible_deadlock"] = summary_df["possible_deadlock"].fillna(False)
     else:
         summary_df["possible_deadlock"] = False
 
@@ -588,22 +603,6 @@ def main() -> None:
     else:
         summary_df["stopped_with_waste"] = pd.NA
 
-    if "total" in model_rows.columns and args.stall_window > 0:
-        stall_by_run = (
-            model_rows.sort_values(["RunId", "Step"])
-            .groupby("RunId")["total"]
-            .apply(
-                lambda s: (len(s) >= args.stall_window)
-                and (s.iloc[-args.stall_window:].nunique() == 1)
-                and (s.iloc[-1] > 0)
-            )
-            .rename("possible_deadlock")
-            .reset_index()
-        )
-        summary_df = summary_df.merge(stall_by_run, on="RunId", how="left")
-    else:
-        summary_df["possible_deadlock"] = False
-
     summary_keep = [
         "RunId",
         "iteration",
@@ -651,13 +650,8 @@ def main() -> None:
     summary_path = out_dir / "summary.csv"
     timeseries_path = out_dir / "timeseries.csv"
     suspicious_path = out_dir / "suspicious_runs.csv"
-    filtered_runs_path = out_dir / "filtered_runs_distance_stall.csv"
     summary_df.to_csv(summary_path, index=False)
     timeseries_df.to_csv(timeseries_path, index=False)
-    run_distance_stagnation[run_distance_stagnation["distance_stagnation"]].to_csv(
-        filtered_runs_path,
-        index=False,
-    )
     summary_df[
         summary_df["timed_out"] | summary_df["possible_deadlock"] | summary_df["stopped_with_waste"]
     ].to_csv(suspicious_path, index=False)
@@ -668,15 +662,12 @@ def main() -> None:
         out_dir,
         filtered_runs=filtered_runs,
         total_runs=total_runs,
+        mean_cleanup_step=(summary_df["step_total_zero"].dropna().mean() if not summary_df.empty else None),
     )
 
     cleaned_rate = summary_df["cleaned"].mean() if not summary_df.empty else 0.0
     print("\nBatch completed")
     print(f"Output directory: {out_dir}")
-    print(
-        "Runs filtered out due to cumulative_distance stagnation "
-        f"({DISTANCE_STALL_WINDOW}+ steps): {filtered_runs} / {total_runs}"
-    )
     print(f"Cleaned runs: {summary_df['cleaned'].sum()} / {len(summary_df)} ({cleaned_rate:.1%})")
     timeout_count = int(summary_df["timed_out"].sum())
     deadlock_count = int(summary_df["possible_deadlock"].sum())
