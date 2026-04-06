@@ -11,12 +11,12 @@ from mesa import Model
 from mesa.space import MultiGrid
 from agents import greenAgent, yellowAgent, redAgent
 from objects import radioactivityAgent, wasteAgent
-from config import WASTE_UPGRADE
+from config import DEFAULT_MODEL_PARAMS
 from messaging import Message, Mailbox
 
 class Model(Model):
     """A model with some number of agents, number of waste, and a grid cell."""
-    def __init__(self, n_green_agents=1, n_yellow_agents=1, n_red_agents=1, n_green_waste=1, n_yellow_waste=0, n_red_waste=0, width=10, height=10, seed=None):
+    def __init__(self, n_green_agents=1, n_yellow_agents=1, n_red_agents=1, n_green_waste=1, n_yellow_waste=0, n_red_waste=0, width=10, height=10, seed=None, policy_profile_green=DEFAULT_MODEL_PARAMS["policy_profile_green"], policy_profile_yellow=DEFAULT_MODEL_PARAMS["policy_profile_yellow"], policy_profile_red=DEFAULT_MODEL_PARAMS["policy_profile_red"]):
         """Initialize the model.
 
         Args:
@@ -37,6 +37,9 @@ class Model(Model):
         self.num_green_waste = n_green_waste
         self.num_yellow_waste = n_yellow_waste
         self.num_red_waste = n_red_waste
+        self.policy_profile_green = policy_profile_green
+        self.policy_profile_yellow = policy_profile_yellow
+        self.policy_profile_red = policy_profile_red
         
         self.grid = MultiGrid(width, height, torus=False)
         self.robotAgents = []
@@ -122,21 +125,21 @@ class Model(Model):
 
         # Create agents and place them randomly in their area
         for _ in range(self.num_green_agents):
-            green_agent = greenAgent(self, agent_id=self.next_agent_id())
+            green_agent = greenAgent(self, agent_id=self.next_agent_id(), policy_profile=self.policy_profile_green)
             self.robotAgents.append(green_agent)
             self._register_robot_mailbox(green_agent)
             pos = self.get_random_free_robot_position(self.z1)
             self.grid.place_agent(green_agent, pos)
             
         for _ in range(self.num_yellow_agents):
-            yellow_agent = yellowAgent(self, agent_id=self.next_agent_id())
+            yellow_agent = yellowAgent(self, agent_id=self.next_agent_id(), policy_profile=self.policy_profile_yellow)
             self.robotAgents.append(yellow_agent)
             self._register_robot_mailbox(yellow_agent)
             pos = self.get_random_free_robot_position(self.z2)
             self.grid.place_agent(yellow_agent, pos)
             
         for _ in range(self.num_red_agents):
-            red_agent = redAgent(self, agent_id=self.next_agent_id())
+            red_agent = redAgent(self, agent_id=self.next_agent_id(), policy_profile=self.policy_profile_red)
             self.robotAgents.append(red_agent)
             self._register_robot_mailbox(red_agent)
             pos = self.get_random_free_robot_position(self.z3)
@@ -289,6 +292,11 @@ class Model(Model):
         if action is None:
             # No feasible action this turn (blocked or no valid policy branch).
             return self.get_percepts(agent)
+
+        # Keep agent state stable for a short window after answering a carry query.
+        if action in {"pick_up", "drop", "transform"} and agent.current_step < getattr(agent, "state_change_freeze_until", -1):
+            return self.get_percepts(agent)
+
         if action.startswith("move"):
             direction = action.split("_")[1]
             return self.move_agent(agent, direction)
@@ -359,6 +367,9 @@ class Model(Model):
         """Drop waste if the agent is carrying waste and return the resulting percepts."""
         if agent.inventory:
             waste = agent.inventory.pop()
+            agent.last_dropped_waste_id = waste.waste_id
+            agent.last_dropped_waste_type = waste.waste_type
+            agent.last_dropped_waste_pos = agent.pos
             if agent.pos == self.waste_disposal_zone:
                 # Disposed!
                 self.disposed_counts[waste.waste_type] += 1

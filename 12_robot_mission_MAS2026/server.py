@@ -509,7 +509,25 @@ model_params = {
         "min": 5,
         "max": 50,
         "step": 1,
-    }
+    },
+    "policy_profile_green": {
+        "type": "Select",
+        "value": DEFAULT_MODEL_PARAMS["policy_profile_green"],
+        "label": "Green Agents Policy Profile:",
+        "values": ["no_communication", "widespread"],
+    },
+    "policy_profile_yellow": {
+        "type": "Select",
+        "value": DEFAULT_MODEL_PARAMS["policy_profile_yellow"],
+        "label": "Yellow Agents Policy Profile:",
+        "values": ["no_communication", "widespread"],
+    },
+    "policy_profile_red": {
+        "type": "Select",
+        "value": DEFAULT_MODEL_PARAMS["policy_profile_red"],
+        "label": "Red Agents Policy Profile:",
+        "values": ["no_communication", "widespread"],
+    },
 }
 
 # Create initial model instance used by SolaraViz.

@@ -10,6 +10,7 @@ actions = {
         }
 
 WASTE_UPGRADE = {"green": "yellow", "yellow": "red"}
+DEFAULT_POLICY_PROFILE = "widespread"
 
 # Shared defaults used by both batch runner and Solara dashboard.
 DEFAULT_MODEL_PARAMS = {
@@ -21,4 +22,7 @@ DEFAULT_MODEL_PARAMS = {
         "n_red_waste": 13,
         "width": 25,
         "height": 25,
+        "policy_profile_green": DEFAULT_POLICY_PROFILE,
+        "policy_profile_yellow": DEFAULT_POLICY_PROFILE,
+        "policy_profile_red": DEFAULT_POLICY_PROFILE,
 }

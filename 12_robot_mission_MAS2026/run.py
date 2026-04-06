@@ -123,6 +123,10 @@ def parse_int_list(value: str) -> list[int]:
     return [int(v.strip()) for v in value.split(",") if v.strip()]
 
 
+def parse_str_list(value: str) -> list[str]:
+    return [v.strip() for v in value.split(",") if v.strip()]
+
+
 def _latest_count(model: Model, key: str) -> int:
     if not model.waste_count_history:
         counts = model._compute_waste_counts()  # pylint: disable=protected-access
@@ -368,6 +372,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed-start", type=int, default=None, help="If set, run deterministic seeds from seed_start to seed_start + iterations - 1")
     parser.add_argument("--seeds", default=None, help="Comma-separated explicit seeds (requires --iterations 1)")
     parser.add_argument("--stall-window", type=int, default=200, help="Window size to flag no-progress runs")
+    parser.add_argument("--policy-profile-green", default=str(DEFAULT_MODEL_PARAMS["policy_profile_green"]), help="Comma-separated policy profiles for green agents: no_communication, red_communication, widespread")
+    parser.add_argument("--policy-profile-yellow", default=str(DEFAULT_MODEL_PARAMS["policy_profile_yellow"]), help="Comma-separated policy profiles for yellow agents")
+    parser.add_argument("--policy-profile-red", default=str(DEFAULT_MODEL_PARAMS["policy_profile_red"]), help="Comma-separated policy profiles for red agents")
     parser.add_argument("--output-dir", default="batch_outputs")
     return parser.parse_args()
 
@@ -388,6 +395,9 @@ def main() -> None:
         "n_red_waste": parse_int_list(args.red_waste),
         "width": parse_int_list(args.width),
         "height": parse_int_list(args.height),
+        "policy_profile_green": parse_str_list(args.policy_profile_green),
+        "policy_profile_yellow": parse_str_list(args.policy_profile_yellow),
+        "policy_profile_red": parse_str_list(args.policy_profile_red),
     }
 
     batch_iterations = args.iterations
@@ -434,6 +444,13 @@ def main() -> None:
         + model_rows["width"].astype(str)
         + "x"
         + model_rows["height"].astype(str)
+        + ")"
+        + "-P(g" 
+        + model_rows["policy_profile_green"].astype(str)
+        + ",y"
+        + model_rows["policy_profile_yellow"].astype(str)
+        + ",r"
+        + model_rows["policy_profile_red"].astype(str)
         + ")"
     )
 
