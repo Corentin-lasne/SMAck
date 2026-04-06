@@ -540,6 +540,70 @@ def main() -> None:
     else:
         summary_df["possible_deadlock"] = False
 
+    if "seed" not in summary_df.columns:
+        summary_df["seed"] = pd.NA
+
+    if "step_all_zero" not in summary_df.columns and "step_total_zero" in summary_df.columns:
+        summary_df["step_all_zero"] = summary_df["step_total_zero"]
+    if "step_all_zero" in summary_df.columns and "steps_executed" in summary_df.columns:
+        summary_df["step_all_zero_effective"] = summary_df["step_all_zero"].fillna(
+            summary_df["steps_executed"]
+        )
+
+    initial_total_waste = (
+        summary_df["n_green_waste"] + summary_df["n_yellow_waste"] + summary_df["n_red_waste"]
+    )
+    summary_df["initial_total_waste"] = initial_total_waste
+
+    optimal = _optimal_disposal_counts(
+        summary_df["n_green_waste"],
+        summary_df["n_yellow_waste"],
+        summary_df["n_red_waste"],
+    )
+    summary_df["optimal_green"] = optimal["green"]
+    summary_df["optimal_yellow"] = optimal["yellow"]
+    summary_df["optimal_red"] = optimal["red"]
+    summary_df["optimal_total"] = optimal["total"]
+
+    denominator = summary_df["initial_total_waste"].replace(0, pd.NA)
+    summary_df["compaction_ratio_green"] = (
+        summary_df["disposed_green"] - summary_df["optimal_green"]
+    ) / denominator
+    summary_df["compaction_ratio_yellow"] = (
+        summary_df["disposed_yellow"] - summary_df["optimal_yellow"]
+    ) / denominator
+    summary_df["compaction_ratio_red"] = (
+        summary_df["disposed_red"] - summary_df["optimal_red"]
+    ) / denominator
+    summary_df["compaction_ratio_total"] = (
+        summary_df["disposed_total"] - summary_df["optimal_total"]
+    ) / denominator
+
+    summary_df["timed_out"] = (
+        (~summary_df["cleaned"].fillna(False)) & (summary_df["steps_executed"] >= args.max_steps)
+    )
+
+    if "total" in summary_df.columns:
+        summary_df["stopped_with_waste"] = summary_df["total"].fillna(0) > 0
+    else:
+        summary_df["stopped_with_waste"] = pd.NA
+
+    if "total" in model_rows.columns and args.stall_window > 0:
+        stall_by_run = (
+            model_rows.sort_values(["RunId", "Step"])
+            .groupby("RunId")["total"]
+            .apply(
+                lambda s: (len(s) >= args.stall_window)
+                and (s.iloc[-args.stall_window:].nunique() == 1)
+                and (s.iloc[-1] > 0)
+            )
+            .rename("possible_deadlock")
+            .reset_index()
+        )
+        summary_df = summary_df.merge(stall_by_run, on="RunId", how="left")
+    else:
+        summary_df["possible_deadlock"] = False
+
     summary_keep = [
         "RunId",
         "iteration",
