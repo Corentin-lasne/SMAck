@@ -2,6 +2,11 @@
 
 This repository contains the implementation and documentation for the multi-agent robot mission project.
 
+Group 12, members :
+- Corentin Lasne
+- Clara Vega
+- Tomas Stone
+
 Start here:
 
 1. [Project report](12_robot_mission_MAS2026/Explanations%20markdown/RAPPORT.md) - read this first.
