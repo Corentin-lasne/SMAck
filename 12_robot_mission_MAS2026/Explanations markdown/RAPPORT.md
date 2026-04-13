@@ -250,15 +250,6 @@ For red, this does not mean that red waste is compacted again. It means that the
 - Gap between green, yellow, red, and total extinction steps : seems to be pretty similar cause no bottleneck at initialization.
 - Compaction behavior : as expected, not all green and yellow wastes are compacted and so we miss some red wastes that should have been compacted.
 
-Mini summary table (example):
-
-| Indicator | Observed Value | Comment |
-|---|---|---|
-| Cleaned run rate | [to be completed] | [to be completed] |
-| Mean `step_total_zero` | [to be completed] | [to be completed] |
-| Median `compaction_ratio_total` | [to be completed] | [to be completed] |
-| Suspicious runs (`timed_out/deadlock`) | [to be completed] | [to be completed] |
-
 ---
 
 ## 6) Policy Comparison and Decision
