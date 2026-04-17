@@ -1,7 +1,5 @@
 # SMA Report - Multi-Agent Robotic Mission
 
-> Working draft: to be completed with figures and interpretations.
->
 > Project: SMAck / 12_robot_mission_MAS2026
 >
 > Team: Corentin Lasne, Tomas Stone, Clara Vega
