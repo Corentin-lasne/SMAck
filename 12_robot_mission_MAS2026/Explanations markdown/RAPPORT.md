@@ -146,7 +146,18 @@ Common priority structure (typical order):
 - `run.py`: batch runner, CSV outputs, plots, and multi-run analysis.
 - `config.py`: default parameters and action constants.
 
-### 4.2 Interactive Execution (Solara)
+### 4.2 Environment Setup
+
+Before running any simulations, you must set up the Python environment:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate  # On macOS/Linux
+# or on Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### 4.3 Interactive Execution (Solara)
 
 ```bash
 solara run server.py
@@ -174,7 +185,7 @@ On the left two graphs :
 
 The simulation stops when all waste is cleaned (can be infinite if deadlocked).
 
-### 4.3 Batch Execution (Statistics)
+### 4.4 Batch Execution (Statistics)
 
 Example (single configuration, multiple iterations):
 
